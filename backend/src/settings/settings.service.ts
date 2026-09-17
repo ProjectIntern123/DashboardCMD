@@ -44,6 +44,16 @@ export class SettingsService {
     'smtp_encryption',
     'apply_branding_to_admin',
     'admin_theme_mode',
+    // PWA branding & manifest configurations
+    'pwa_name',
+    'pwa_short_name',
+    'pwa_description',
+    'pwa_icon_type',
+    'pwa_icon',
+    'pwa_theme_color',
+    'pwa_background_color',
+    'pwa_display',
+    'pwa_orientation',
   ];
 
   private readonly defaultBranding: Record<string, string> = {
@@ -83,6 +93,16 @@ export class SettingsService {
     smtp_host: 'smtp.office365.com',
     smtp_port: '587',
     smtp_encryption: 'STARTTLS',
+    // PWA Defaults
+    pwa_name: 'HARTEK CMD Office',
+    pwa_short_name: 'HARTEK CMD',
+    pwa_description: 'HARTEK Group CMD Office Command Center PWA',
+    pwa_icon_type: 'branding',
+    pwa_icon: '',
+    pwa_theme_color: '#0f2a4a',
+    pwa_background_color: '#0f2a4a',
+    pwa_display: 'standalone',
+    pwa_orientation: 'portrait-primary',
   };
 
   async getPublicSettings() {

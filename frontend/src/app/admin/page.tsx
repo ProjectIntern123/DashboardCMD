@@ -69,7 +69,7 @@ export default function AdminConsolePage() {
 
   // Navigation state
   const [activeTab, setActiveTab] = useState<'dashboard' | 'branding' | 'users' | 'roles' | 'smtp' | 'sessions'>('dashboard');
-  const [subBrandingTab, setSubBrandingTab] = useState<'dashboard' | 'login'>('dashboard');
+  const [subBrandingTab, setSubBrandingTab] = useState<'dashboard' | 'login' | 'pwa'>('dashboard');
   const [loading, setLoading] = useState(true);
   const [adminUser, setAdminUser] = useState<any>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -280,6 +280,19 @@ export default function AdminConsolePage() {
       if (typeof reader.result === 'string') {
         setBranding((prev: any) => ({ ...prev, login_logo: reader.result }));
         showToast('Login logo loaded in preview');
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handlePwaIconUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (typeof reader.result === 'string') {
+        setBranding((prev: any) => ({ ...prev, pwa_icon: reader.result, pwa_icon_type: 'upload' }));
+        showToast('Custom PWA icon loaded into preview');
       }
     };
     reader.readAsDataURL(file);
@@ -1131,6 +1144,23 @@ export default function AdminConsolePage() {
                 >
                   🔒 Login Screen Branding
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setSubBrandingTab('pwa')}
+                  style={{
+                    padding: '8px 16px',
+                    borderRadius: '6px',
+                    border: 'none',
+                    fontSize: '13px',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    background: subBrandingTab === 'pwa' ? (branding.primary_color || 'var(--navy)') : 'transparent',
+                    color: subBrandingTab === 'pwa' ? '#fff' : (isDark ? '#cbd5e1' : '#475569'),
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  📱 PWA Branding & Installation
+                </button>
               </div>
 
               <div style={{ background: isDark ? '#1e293b' : '#fff', border: isDark ? '1px solid #334155' : '1px solid #e2e8f0', borderRadius: '12px', padding: '24px', maxWidth: '680px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.05)' }}>
@@ -1151,22 +1181,23 @@ export default function AdminConsolePage() {
                       </div>
                       
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                        <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>Dashboard Logo (Emoji or Image Data URI)</label>
+                        <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>Dashboard Logo (Emoji/Text or Upload image below)</label>
                         <input type="text" value={branding.app_logo} onChange={e => setBranding({...branding, app_logo: e.target.value})} style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} />
                       </div>
 
-                      <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: '1 1 200px' }}>
-                          <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>Primary Theme Color</label>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>Primary Brand Color</label>
                           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                            <input type="color" value={branding.primary_color || '#0f2a4a'} onChange={e => setBranding({...branding, primary_color: e.target.value})} style={{ padding: '2px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '4px', width: '40px', height: '36px', cursor: 'pointer', background: 'transparent' }} />
+                            <input type="color" value={branding.primary_color || '#0f2a4a'} onChange={e => setBranding({...branding, primary_color: e.target.value})} style={{ padding: '2px', width: '36px', height: '36px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', cursor: 'pointer', background: 'transparent' }} />
                             <input type="text" value={branding.primary_color || '#0f2a4a'} onChange={e => setBranding({...branding, primary_color: e.target.value})} style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', flex: 1, background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} />
                           </div>
                         </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: '1 1 200px' }}>
-                          <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>Accent Theme Color</label>
+
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>Accent Highlight Color</label>
                           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                            <input type="color" value={branding.accent_color || '#ef9f27'} onChange={e => setBranding({...branding, accent_color: e.target.value})} style={{ padding: '2px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '4px', width: '40px', height: '36px', cursor: 'pointer', background: 'transparent' }} />
+                            <input type="color" value={branding.accent_color || '#ef9f27'} onChange={e => setBranding({...branding, accent_color: e.target.value})} style={{ padding: '2px', width: '36px', height: '36px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', cursor: 'pointer', background: 'transparent' }} />
                             <input type="text" value={branding.accent_color || '#ef9f27'} onChange={e => setBranding({...branding, accent_color: e.target.value})} style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', flex: 1, background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} />
                           </div>
                         </div>
@@ -1185,7 +1216,7 @@ export default function AdminConsolePage() {
                         </label>
                       </div>
                     </div>
-                  ) : (
+                  ) : subBrandingTab === 'login' ? (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                       <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: isDark ? '#3b82f6' : 'var(--navy)', borderBottom: isDark ? '1px solid #334155' : '1px solid #f1f5f9', paddingBottom: '8px' }}>Login Screen Customization</h3>
                       
@@ -1290,6 +1321,210 @@ export default function AdminConsolePage() {
                             </span>
                           </div>
                         </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                      <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: isDark ? '#3b82f6' : 'var(--navy)', borderBottom: isDark ? '1px solid #334155' : '1px solid #f1f5f9', paddingBottom: '8px' }}>
+                        Progressive Web App (PWA) Configuration
+                      </h3>
+
+                      {/* PWA App Name */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>PWA Application Name</label>
+                        <input 
+                          type="text" 
+                          value={branding.pwa_name || ''} 
+                          onChange={e => setBranding({...branding, pwa_name: e.target.value})} 
+                          placeholder={`Fallback: ${branding.app_name || 'HARTEK CMD Office'}`}
+                          style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} 
+                        />
+                        <span style={{ fontSize: '11px', color: '#64748b' }}>Full name displayed on PWA installation prompt and launcher. (If empty, uses Dashboard App Name).</span>
+                      </div>
+
+                      {/* PWA Short Name */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>PWA Short Name</label>
+                        <input 
+                          type="text" 
+                          value={branding.pwa_short_name || ''} 
+                          onChange={e => setBranding({...branding, pwa_short_name: e.target.value})} 
+                          placeholder="e.g. HARTEK CMD"
+                          style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} 
+                        />
+                        <span style={{ fontSize: '11px', color: '#64748b' }}>Short label used under home screen app icon. (If empty, derived automatically).</span>
+                      </div>
+
+                      {/* PWA Description */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>PWA Description</label>
+                        <textarea 
+                          rows={2}
+                          value={branding.pwa_description || ''} 
+                          onChange={e => setBranding({...branding, pwa_description: e.target.value})} 
+                          placeholder={`Fallback: ${branding.app_subtitle || 'HARTEK Group CMD Office Command Center'}`}
+                          style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} 
+                        />
+                      </div>
+
+                      {/* PWA Icon Selection Options */}
+                      <div style={{ border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '8px', padding: '14px', background: isDark ? '#0f172a' : '#f8fafc', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                        <label style={{ fontWeight: 700, fontSize: '13px', color: isDark ? '#3b82f6' : '#1e293b' }}>PWA Icon Selection Source</label>
+                        
+                        <select 
+                          value={branding.pwa_icon_type || 'branding'} 
+                          onChange={e => setBranding({...branding, pwa_icon_type: e.target.value})}
+                          style={{ padding: '8px 12px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#1e293b' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
+                        >
+                          <option value="branding">Option C — Reuse Existing Branding Logo (app_logo)</option>
+                          <option value="upload">Option A — Upload Custom PWA Image File</option>
+                          <option value="url">Option B — External Image Web Link / URL</option>
+                        </select>
+
+                        {/* Option A: Upload File */}
+                        {branding.pwa_icon_type === 'upload' && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
+                            <label style={{ fontWeight: 600, fontSize: '11px', color: isDark ? '#cbd5e1' : '#475569' }}>Upload PWA Icon (PNG / JPEG / WebP / SVG)</label>
+                            <input type="file" accept="image/*" onChange={handlePwaIconUpload} style={{ fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }} />
+                          </div>
+                        )}
+
+                        {/* Option B: External URL */}
+                        {branding.pwa_icon_type === 'url' && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
+                            <label style={{ fontWeight: 600, fontSize: '11px', color: isDark ? '#cbd5e1' : '#475569' }}>PWA Icon Web Link / URL</label>
+                            <input 
+                              type="url" 
+                              placeholder="https://example.com/assets/app-icon.png" 
+                              value={branding.pwa_icon || ''} 
+                              onChange={e => setBranding({...branding, pwa_icon: e.target.value})}
+                              style={{ padding: '8px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#1e293b' : '#fff', color: isDark ? '#fff' : '#0f172a' }} 
+                            />
+                          </div>
+                        )}
+
+                        {/* Icon Preview Box */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginTop: '6px', padding: '10px', background: isDark ? '#1e293b' : '#fff', borderRadius: '8px', border: isDark ? '1px solid #334155' : '1px solid #e2e8f0' }}>
+                          <div style={{ width: '56px', height: '56px', borderRadius: '12px', background: branding.pwa_background_color || branding.login_bg_color || '#0f2a4a', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', boxShadow: '0 2px 6px rgba(0,0,0,0.15)', flexShrink: 0 }}>
+                            {branding.pwa_icon ? (
+                              <img src={branding.pwa_icon} alt="PWA Icon Preview" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                            ) : branding.app_logo && (branding.app_logo.startsWith('data:') || branding.app_logo.startsWith('http')) ? (
+                              <img src={branding.app_logo} alt="Brand Icon Preview" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                            ) : (
+                              <span style={{ fontSize: '28px' }}>{branding.app_logo || '🏢'}</span>
+                            )}
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: '13px', fontWeight: 700, color: isDark ? '#f1f5f9' : '#1e293b' }}>
+                              {branding.pwa_name || branding.app_name || 'HARTEK CMD Office'}
+                            </div>
+                            <div style={{ fontSize: '11px', color: isDark ? '#94a3b8' : '#64748b' }}>
+                              Active PWA Launcher Icon Preview
+                            </div>
+                          </div>
+                          {branding.pwa_icon && (
+                            <button 
+                              type="button" 
+                              onClick={() => setBranding({...branding, pwa_icon: '', pwa_icon_type: 'branding'})}
+                              style={{ padding: '6px 10px', background: '#fee2e2', color: '#ef4444', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '11px', fontWeight: 600 }}
+                            >
+                              Reset Icon
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Theme and Background Colors */}
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>PWA Theme Color</label>
+                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                            <input 
+                              type="color" 
+                              value={branding.pwa_theme_color || branding.primary_color || '#0f2a4a'} 
+                              onChange={e => setBranding({...branding, pwa_theme_color: e.target.value})} 
+                              style={{ padding: '2px', width: '36px', height: '36px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', cursor: 'pointer', background: 'transparent' }} 
+                            />
+                            <input 
+                              type="text" 
+                              value={branding.pwa_theme_color || branding.primary_color || '#0f2a4a'} 
+                              onChange={e => setBranding({...branding, pwa_theme_color: e.target.value})} 
+                              style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', flex: 1, background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} 
+                            />
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>PWA Background Color</label>
+                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                            <input 
+                              type="color" 
+                              value={branding.pwa_background_color || branding.login_bg_color || '#0f2a4a'} 
+                              onChange={e => setBranding({...branding, pwa_background_color: e.target.value})} 
+                              style={{ padding: '2px', width: '36px', height: '36px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', cursor: 'pointer', background: 'transparent' }} 
+                            />
+                            <input 
+                              type="text" 
+                              value={branding.pwa_background_color || branding.login_bg_color || '#0f2a4a'} 
+                              onChange={e => setBranding({...branding, pwa_background_color: e.target.value})} 
+                              style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', flex: 1, background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} 
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Display Mode & Orientation */}
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>Display Mode</label>
+                          <select 
+                            value={branding.pwa_display || 'standalone'} 
+                            onChange={e => setBranding({...branding, pwa_display: e.target.value})}
+                            style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
+                          >
+                            <option value="standalone">Standalone App (Recommended)</option>
+                            <option value="fullscreen">Fullscreen</option>
+                            <option value="minimal-ui">Minimal UI</option>
+                            <option value="browser">Browser Tab</option>
+                          </select>
+                        </div>
+
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>Screen Orientation</label>
+                          <select 
+                            value={branding.pwa_orientation || 'portrait-primary'} 
+                            onChange={e => setBranding({...branding, pwa_orientation: e.target.value})}
+                            style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
+                          >
+                            <option value="portrait-primary">Portrait Primary</option>
+                            <option value="any">Any / Auto Rotate</option>
+                            <option value="landscape-primary">Landscape Primary</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', justifyContent: 'flex-start', marginTop: '6px' }}>
+                        <button 
+                          type="button" 
+                          onClick={() => {
+                            setBranding((prev: any) => ({
+                              ...prev,
+                              pwa_name: '',
+                              pwa_short_name: '',
+                              pwa_description: '',
+                              pwa_icon_type: 'branding',
+                              pwa_icon: '',
+                              pwa_theme_color: '',
+                              pwa_background_color: '',
+                              pwa_display: 'standalone',
+                              pwa_orientation: 'portrait-primary'
+                            }));
+                            showToast('PWA overrides reset to default brand settings');
+                          }}
+                          style={{ padding: '6px 12px', background: isDark ? '#334155' : '#f1f5f9', color: isDark ? '#cbd5e1' : '#475569', border: isDark ? '1px solid #4b5563' : '1px solid #cbd5e1', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}
+                        >
+                          🔄 Restore PWA Defaults
+                        </button>
                       </div>
                     </div>
                   )}
