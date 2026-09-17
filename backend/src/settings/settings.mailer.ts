@@ -99,7 +99,13 @@ export class SettingsMailer {
       }
 
       const senderName = merged.smtp_sender_name || 'HARTEK CMD Office';
-      const senderEmail = (merged.smtp_sender_email || merged.smtp_username || process.env.SMTP_USER || 'no-reply@hartek.com').trim();
+      const smtpUser = (merged.smtp_username || config.smtp_username || process.env.SMTP_USERNAME || process.env.SMTP_USER || '').trim();
+      
+      let senderEmail = (merged.smtp_sender_email || '').trim();
+      // Office 365 / Exchange Requirement: Default 'no-reply' or unconfigured sender email must match authenticated user to prevent SendAsDenied (554 5.2.252)
+      if (!senderEmail || senderEmail === 'no-reply@hartek.com') {
+        senderEmail = smtpUser || 'no-reply@hartek.com';
+      }
 
       await transporter.sendMail({
         from: `"${senderName}" <${senderEmail}>`,

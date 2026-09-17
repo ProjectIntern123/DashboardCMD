@@ -77,7 +77,7 @@ export class SettingsService {
     admin_logo_width: '40px',
     admin_logo_spacing: '10px',
     smtp_sender_name: 'HARTEK CMD Office',
-    smtp_sender_email: 'no-reply@hartek.com',
+    smtp_sender_email: '',
     smtp_username: '',
     smtp_password: '',
     smtp_host: 'smtp.office365.com',

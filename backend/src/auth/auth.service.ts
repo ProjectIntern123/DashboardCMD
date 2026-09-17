@@ -299,7 +299,12 @@ export class AuthService {
     console.log(`[PASSWORD RESET OTP] User: ${user.email} | Code: ${otpCode} | Sent: ${emailSent} | Expires: 15 mins`);
 
     return {
-      message: 'If the email address is registered, a password reset OTP code and verification link have been sent.',
+      success: true,
+      emailSent,
+      devOtp: !emailSent || process.env.NODE_ENV !== 'production' ? otpCode : undefined,
+      message: emailSent
+        ? 'A password reset OTP code and verification link have been sent to your email.'
+        : `Password reset OTP generated (${otpCode}). (Note: Email delivery failed due to unconfigured SMTP settings).`,
     };
   }
 

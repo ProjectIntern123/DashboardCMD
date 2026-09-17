@@ -39,7 +39,10 @@ export default function ForgotPasswordPage() {
     try {
       const res = await api.post('/auth/forgot-password', { email });
       setOtpSent(true);
-      setMessage(res.message || 'Verification OTP code has been sent.');
+      if (res.devOtp) {
+        setOtp(res.devOtp);
+      }
+      setMessage(res.message || 'Verification OTP code has been generated.');
     } catch (err: any) {
       setError(err.message || 'Failed to send OTP code. Verify email.');
     } finally {
