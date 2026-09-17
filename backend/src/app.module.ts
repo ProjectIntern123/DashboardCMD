@@ -18,6 +18,7 @@ import { DashboardModule } from './dashboard/dashboard.module';
 import { SettingsModule } from './settings/settings.module';
 import { UserModule } from './user/user.module';
 import { RoleModule } from './role/role.module';
+import { EmailTemplatesModule } from './email-templates/email-templates.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { RoleModule } from './role/role.module';
     SettingsModule,
     UserModule,
     RoleModule,
+    EmailTemplatesModule,
   ],
   controllers: [AppController],
   providers: [

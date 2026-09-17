@@ -1,12 +1,16 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional, Inject } from '@nestjs/common';
 import { SettingsService } from './settings.service';
+import { EmailTemplatesService } from '../email-templates/email-templates.service';
 import * as nodemailer from 'nodemailer';
 
 @Injectable()
 export class SettingsMailer {
   private readonly logger = new Logger(SettingsMailer.name);
 
-  constructor(private readonly settingsService: SettingsService) {}
+  constructor(
+    private readonly settingsService: SettingsService,
+    @Optional() private readonly emailTemplatesService?: EmailTemplatesService,
+  ) {}
 
   /**
    * Builds the Nodemailer transporter dynamically from current database settings or overrides.
@@ -121,5 +125,32 @@ export class SettingsMailer {
       this.logger.error(`Failed to send email to ${to}: ${e.message}`);
       return false;
     }
+  }
+
+  /**
+   * Sends an email dynamically using the Email Templates system if available, falling back safely if unconfigured.
+   */
+  async sendTemplateEmail(
+    to: string,
+    eventKey: string,
+    variables: Record<string, any>,
+    defaultSubject: string,
+    defaultText: string,
+    overrides?: Record<string, string>,
+  ): Promise<boolean> {
+    let subject = defaultSubject;
+    let text = defaultText;
+
+    if (this.emailTemplatesService) {
+      try {
+        const rendered = await this.emailTemplatesService.renderForEvent(eventKey, variables, defaultSubject, defaultText);
+        subject = rendered.subject;
+        text = rendered.body;
+      } catch (err: any) {
+        this.logger.warn(`Template lookup for event "${eventKey}" failed, using fallback email content: ${err.message}`);
+      }
+    }
+
+    return this.sendEmail(to, subject, text, undefined, overrides);
   }
 }

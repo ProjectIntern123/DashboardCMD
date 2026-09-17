@@ -8,13 +8,13 @@ export class UserService {
   constructor(
     private prisma: PrismaService,
     private settingsMailer: SettingsMailer,
-  ) {}
+  ) { }
 
   async findAll(actorRole: string) {
     const isSystemAdmin = actorRole === 'Admin';
-    
+
     const where: any = {};
-    
+
     if (!isSystemAdmin) {
       where.role = {
         name: { notIn: ['Admin'] },
@@ -88,7 +88,7 @@ export class UserService {
 
     // Send credentials email
     try {
-      const loginUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      const loginUrl = process.env.FRONTEND_URL || 'cmd.hartek.tech';
       const subject = 'Welcome to HARTEK CMD Dashboard - Your Credentials';
       const content = `Hello ${user.name},
 
@@ -101,10 +101,22 @@ Here are your account credentials:
 
 ${isTempPassword ? 'Note: You have been assigned a temporary password. You will be required to change it immediately upon your first login.' : 'Please use the password provided by your administrator to sign in.'}
 
-Best Regards,
-Hartek Corporate Office`;
+Thank you`;
 
-      await this.settingsMailer.sendEmail(user.email, subject, content);
+      await this.settingsMailer.sendTemplateEmail(
+        user.email,
+        'USER_CREATED',
+        {
+          user_name: user.name,
+          user_email: user.email,
+          temporary_password: tempPassword,
+          login_url: loginUrl,
+          company_name: 'HARTEK Group',
+          is_temp_password: isTempPassword,
+        },
+        subject,
+        content,
+      );
       console.log(`[USER CREATION EMAIL] Sent credentials to ${user.email}`);
     } catch (err) {
       console.error(`[USER CREATION EMAIL ERROR] Failed to send email:`, err);
@@ -127,14 +139,14 @@ Hartek Corporate Office`;
       if (dto.active === false) {
         throw new BadRequestException('You cannot deactivate your own logged-in user account.');
       }
-      
+
       const oldRoleName = user.role?.name;
       const newRole = dto.roleId ? await this.prisma.role.findUnique({ where: { id: dto.roleId } }) : null;
       const newRoleName = newRole?.name;
-      
+
       const wasAdmin = oldRoleName === 'Admin';
       const willBeAdmin = newRoleName === 'Admin';
-      
+
       if (wasAdmin && !willBeAdmin) {
         throw new BadRequestException('You cannot change your own role to a non-administrator role.');
       }
@@ -145,7 +157,7 @@ Hartek Corporate Office`;
     if (wasAdmin) {
       const newRole = dto.roleId ? await this.prisma.role.findUnique({ where: { id: dto.roleId } }) : null;
       const willBeAdmin = newRole?.name === 'Admin';
-      
+
       const isDeactivating = dto.active === false;
       const isLosingAdminRole = !willBeAdmin;
 
@@ -204,27 +216,39 @@ Hartek Corporate Office`;
       },
     });
 
-    // Send temporary password to user via SMTP
-    const emailSent = await this.settingsMailer.sendEmail(
+    // Send temporary password to user via SMTP using template mailer
+    const defaultSubject = 'HARTEK CMD - Temporary Password Key Reset';
+    const defaultText = `Hello ${user.name},\n\nAn administrator has reset your password credentials.\n\nYour Temporary Password Key is: ${tempPassword}\n\nYou will be required to configure a new secure password on your next login.`;
+    
+    const emailSent = await this.settingsMailer.sendTemplateEmail(
       user.email,
-      'HARTEK CMD - Temporary Password Key Reset',
-      `Hello ${user.name},\n\nAn administrator has reset your password credentials.\n\nYour Temporary Password Key is: ${tempPassword}\n\nYou will be required to configure a new secure password on your next login.`,
+      'PASSWORD_CHANGED',
+      {
+        user_name: user.name,
+        user_email: user.email,
+        temporary_password: tempPassword,
+        company_name: 'HARTEK Group',
+        date_time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+        support_email: 'support@hartek.com',
+      },
+      defaultSubject,
+      defaultText,
     );
 
     console.log(`[TEMP PASSWORD RESET] User: ${user.email} | Key: ${tempPassword}`);
 
-    return { 
-      success: true, 
+    return {
+      success: true,
       tempPassword,
       emailSent,
-      message: emailSent 
+      message: emailSent
         ? `Temporary password (${tempPassword}) generated and emailed to ${user.email}.`
         : `Temporary password generated: "${tempPassword}". (Note: Email delivery failed due to SMTP settings. Please share this key manually.)`
     };
   }
 
   async remove(id: string, actorId: string, actorEmail: string) {
-    const user = await this.prisma.user.findUnique({ 
+    const user = await this.prisma.user.findUnique({
       where: { id },
       include: { role: true },
     });

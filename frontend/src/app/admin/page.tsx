@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '../../lib/api';
+import EmailTemplatesAdmin from './components/EmailTemplatesAdmin';
 import { 
   FaPaintBrush, 
   FaUsers, 
@@ -68,7 +69,7 @@ export default function AdminConsolePage() {
   const router = useRouter();
 
   // Navigation state
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'branding' | 'users' | 'roles' | 'smtp' | 'sessions'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'branding' | 'users' | 'roles' | 'smtp' | 'sessions' | 'email-templates'>('dashboard');
   const [subBrandingTab, setSubBrandingTab] = useState<'dashboard' | 'login' | 'pwa'>('dashboard');
   const [loading, setLoading] = useState(true);
   const [adminUser, setAdminUser] = useState<any>(null);
@@ -856,6 +857,31 @@ export default function AdminConsolePage() {
             >
               <FaEnvelope style={{ fontSize: '16px', flexShrink: 0 }} />
               {!sidebarCollapsed && <span>SMTP Mail Gateway</span>}
+            </button>
+
+            <button 
+              className={`tab ${activeTab === 'email-templates' ? 'active' : ''}`} 
+              onClick={() => setActiveTab('email-templates')}
+              title="Notification Email Templates"
+              style={{ 
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: sidebarCollapsed ? 'center' : 'flex-start',
+                gap: sidebarCollapsed ? '0' : '12px',
+                padding: '12px 16px', 
+                borderRadius: '8px', 
+                border: 'none', 
+                cursor: 'pointer', 
+                fontSize: '14px', 
+                fontWeight: 600, 
+                background: activeTab === 'email-templates' ? (isDark ? '#3b82f6' : (branding.primary_color || 'var(--navy)')) : 'transparent', 
+                color: activeTab === 'email-templates' ? '#fff' : (isDark ? '#9ca3af' : '#4b5563'), 
+                transition: 'all 0.2s',
+                width: '100%'
+              }}
+            >
+              <FaEnvelope style={{ fontSize: '16px', flexShrink: 0 }} />
+              {!sidebarCollapsed && <span>Email Templates</span>}
             </button>
 
             <button 
@@ -2120,6 +2146,11 @@ export default function AdminConsolePage() {
                 </div>
               )}
             </div>
+          )}
+
+          {/* TAB: EMAIL TEMPLATES MANAGEMENT */}
+          {activeTab === 'email-templates' && (
+            <EmailTemplatesAdmin isDark={isDark} showToast={showToast} />
           )}
           </div>
         </main>

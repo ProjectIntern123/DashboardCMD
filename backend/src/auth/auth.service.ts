@@ -288,12 +288,21 @@ export class AuthService {
       `<p style="font-size: 12px; color: #64748b; margin-top: 24px;">This code expires in 15 minutes. If you did not request this, no action is needed.</p>` +
       `</div>`;
 
-    // Send actual email via configured SMTP
-    const emailSent = await this.settingsMailer.sendEmail(
+    // Send actual email via configured SMTP using dynamic Email Templates system with fallback
+    const emailSent = await this.settingsMailer.sendTemplateEmail(
       user.email,
+      'PASSWORD_RESET',
+      {
+        user_name: user.name,
+        user_email: user.email,
+        otp_code: otpCode,
+        otp_expires_in: '15',
+        reset_link: resetUrl,
+        login_url: `${frontendUrl}/login`,
+        company_name: 'HARTEK Group',
+      },
       'HARTEK CMD - Account Password Reset OTP',
       emailBody,
-      emailHtml,
     );
 
     console.log(`[PASSWORD RESET OTP] User: ${user.email} | Code: ${otpCode} | Sent: ${emailSent} | Expires: 15 mins`);

@@ -44,3 +44,5 @@ pnpm-debug.log*
 
 # Agent Scratch directories
 /scratch/
+backups/
+/backups/

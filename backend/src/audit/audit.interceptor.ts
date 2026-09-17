@@ -103,6 +103,7 @@ export class AuditInterceptor implements NestInterceptor {
     if (path.includes('/follow-ups')) return 'followUp';
     if (path.includes('/legal-cases')) return 'legalCase';
     if (path.includes('/notepad')) return 'notepadNote';
+    if (path.includes('/email-templates')) return 'emailTemplate';
     return null;
   }
 
@@ -122,6 +123,7 @@ export class AuditInterceptor implements NestInterceptor {
     if (path.includes('/follow-ups')) return 'Follow Up';
     if (path.includes('/legal-cases')) return 'Legal Case';
     if (path.includes('/notepad')) return 'Notepad Note';
+    if (path.includes('/email-templates')) return 'Email Notification Template';
     return 'Resource';
   }
 }
