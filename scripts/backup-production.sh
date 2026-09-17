@@ -45,7 +45,9 @@ DB_BACKUP_FILE="$BACKUP_DIR/db-backup-$TIMESTAMP.sql.gz"
 
 if [ -n "${DATABASE_URL:-}" ]; then
     echo "  Executing pg_dump against production PostgreSQL database..."
-    pg_dump "$DATABASE_URL" | gzip > "$DB_BACKUP_FILE"
+    # Strip Prisma-specific ?schema= or &schema= parameters unsupported by pg_dump CLI
+    CLEAN_DB_URL=$(echo "$DATABASE_URL" | sed -E 's/[?&]schema=[^&]*//g' | sed -E 's/\?$//')
+    pg_dump "$CLEAN_DB_URL" | gzip > "$DB_BACKUP_FILE"
 else
     echo "  [WARN] DATABASE_URL not set in environment. Attempting local PostgreSQL dump..."
     pg_dump -U postgres -h localhost cmd_office | gzip > "$DB_BACKUP_FILE"
