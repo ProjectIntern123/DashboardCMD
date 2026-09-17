@@ -42,24 +42,25 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# STEP 3: BUILD BACKEND & FRONTEND
+# STEP 3: PRISMA GENERATE & ADDITIVE DATABASE MIGRATION
 # ------------------------------------------------------------------------------
-echo "==> Step 3: Compiling Backend NestJS Application..."
+echo "==> Step 3: Generating Prisma Client & Running Additive Database Migration..."
+cd backend
+npx prisma generate
+npx prisma db push --skip-generate
+cd ..
+
+# ------------------------------------------------------------------------------
+# STEP 4: BUILD BACKEND & FRONTEND
+# ------------------------------------------------------------------------------
+echo "==> Step 4: Compiling Backend NestJS Application..."
 cd backend
 npm run build
 cd ..
 
-echo "==> Step 4: Compiling Frontend Next.js Application..."
+echo "==> Step 5: Compiling Frontend Next.js Application..."
 cd frontend
 npm run build
-cd ..
-
-# ------------------------------------------------------------------------------
-# STEP 4: ADDITIVE DATABASE MIGRATION (Reads DATABASE_URL from .env)
-# ------------------------------------------------------------------------------
-echo "==> Step 5: Executing Additive Database Migration (Prisma)..."
-cd backend
-npx prisma db push --skip-generate
 cd ..
 
 # ------------------------------------------------------------------------------
