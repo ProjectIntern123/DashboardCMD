@@ -1,0 +1,642 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// =========================================================================
+// IDENTITY, SESSION & RBAC
+// =========================================================================
+
+model User {
+  id                  String         @id @default(uuid()) @db.Uuid
+  email               String         @unique
+  passwordHash        String
+  name                String
+  initials            String
+  roleId              String?        @db.Uuid
+  role                Role?          @relation(fields: [roleId], references: [id])
+  departmentId        String?        @db.Uuid
+  department          Department?    @relation(fields: [departmentId], references: [id])
+  managerId           String?        @db.Uuid
+  manager             User?          @relation("ReportingLine", fields: [managerId], references: [id])
+  subordinates        User[]         @relation("ReportingLine")
+  failedLoginAttempts Int            @default(0)
+  lockedUntil         DateTime?
+  mfaSecret           String?
+  mfaEnabled          Boolean        @default(false)
+  otpCode             String?
+  otpExpiresAt        DateTime?
+  active              Boolean        @default(true)
+  requiresPasswordReset Boolean      @default(false)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+  deletedAt           DateTime?
+  deletedBy           String?
+
+  sessions            Session[]
+  deviceTracks        DeviceTrack[]
+  loginHistories      LoginHistory[]
+  comments            Comment[]
+  assignedTasks       Task[]         @relation("AssignedTasks")
+  createdTasks        Task[]         @relation("CreatedTasks")
+  notepadNotes        NotepadNote[]
+  sessionLogs         UserSessionLog[]
+
+  @@index([email])
+  @@index([roleId])
+}
+
+model Role {
+  id               String           @id @default(uuid()) @db.Uuid
+  name             String           @unique
+  users            User[]
+  permissions      RolePermission[]
+  approvalMatrices ApprovalMatrix[]
+}
+
+model Permission {
+  id       String           @id @default(uuid()) @db.Uuid
+  action   String           // e.g. View, Create, Edit, Delete, Export, Import, Approve, Reject, Assign, Manage, Configure, Audit
+  resource String           // e.g. Dashboard, Projects, Tasks, Actions, Escalations, Followups, Legal, Notepad, AdminControl, etc.
+  roles    RolePermission[]
+
+  @@unique([action, resource])
+}
+
+model RolePermission {
+  roleId       String     @db.Uuid
+  permissionId String     @db.Uuid
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+model Session {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  expiresAt DateTime
+  deviceId  String?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([token])
+}
+
+model DeviceTrack {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @db.Uuid
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deviceId   String
+  deviceName String
+  lastIp     String
+  lastActive DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+}
+
+model LoginHistory {
+  id            String    @id @default(uuid()) @db.Uuid
+  userId        String?   @db.Uuid
+  user          User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  timestamp     DateTime  @default(now())
+  ipAddress     String
+  browser       String
+  device        String
+  status        String    // SUCCESS or FAILED
+  failureReason String?
+
+  @@index([userId])
+}
+
+model UserSessionLog {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String?   @db.Uuid
+  user       User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userName   String
+  userEmail  String
+  loginTime  DateTime  @default(now())
+  logoutTime DateTime?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([userId])
+}
+
+// =========================================================================
+// MASTER TABLES
+// =========================================================================
+
+model Company {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @unique
+  branches  Branch[]
+}
+
+model Branch {
+  id          String       @id @default(uuid()) @db.Uuid
+  name        String
+  companyId   String       @db.Uuid
+  company     Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  departments Department[]
+
+  @@unique([name, companyId])
+}
+
+model Department {
+  id        String     @id @default(uuid()) @db.Uuid
+  name      String
+  branchId  String?    @db.Uuid
+  branch    Branch?    @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  users     User[]
+  employees Employee[]
+  projects  Project[]
+
+  @@unique([name, branchId])
+}
+
+model Region {
+  id        String    @id @default(uuid()) @db.Uuid
+  name      String    @unique
+  countries Country[]
+}
+
+model Country {
+  id       String  @id @default(uuid()) @db.Uuid
+  name     String  @unique
+  regionId String? @db.Uuid
+  region   Region? @relation(fields: [regionId], references: [id], onDelete: SetNull)
+  states   State[]
+}
+
+model State {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  countryId String?  @db.Uuid
+  country   Country? @relation(fields: [countryId], references: [id], onDelete: SetNull)
+  cities    City[]
+
+  @@unique([name, countryId])
+}
+
+model City {
+  id      String @id @default(uuid()) @db.Uuid
+  name    String
+  stateId String @db.Uuid
+  state   State  @relation(fields: [stateId], references: [id], onDelete: Cascade)
+
+  @@unique([name, stateId])
+}
+
+model Currency {
+  id     String @id @default(uuid()) @db.Uuid
+  code   String @unique
+  symbol String
+  name   String
+}
+
+model Tax {
+  id   String  @id @default(uuid()) @db.Uuid
+  name String  @unique
+  rate Decimal @db.Decimal(5, 2)
+}
+
+model FinancialYear {
+  id        String   @id @default(uuid()) @db.Uuid
+  code      String   @unique
+  startDate DateTime
+  endDate   DateTime
+  active    Boolean  @default(false)
+}
+
+model Category {
+  id            String        @id @default(uuid()) @db.Uuid
+  name          String        @unique
+  subcategories Subcategory[]
+}
+
+model Subcategory {
+  id         String    @id @default(uuid()) @db.Uuid
+  name       String
+  categoryId String    @db.Uuid
+  category   Category  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  products   Product[]
+
+  @@unique([name, categoryId])
+}
+
+model Product {
+  id            String       @id @default(uuid()) @db.Uuid
+  name          String
+  code          String       @unique
+  subcategoryId String?      @db.Uuid
+  subcategory   Subcategory? @relation(fields: [subcategoryId], references: [id], onDelete: SetNull)
+}
+
+model Vendor {
+  id   String  @id @default(uuid()) @db.Uuid
+  name String
+  code String? @unique
+}
+
+model Customer {
+  id   String  @id @default(uuid()) @db.Uuid
+  name String
+  code String? @unique
+}
+
+model Employee {
+  id             String       @id @default(uuid()) @db.Uuid
+  code           String       @unique
+  firstName      String
+  lastName       String
+  email          String       @unique
+  designationId  String?      @db.Uuid
+  designation    Designation? @relation(fields: [designationId], references: [id], onDelete: SetNull)
+  departmentId   String?      @db.Uuid
+  department     Department?  @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+}
+
+model Designation {
+  id        String     @id @default(uuid()) @db.Uuid
+  name      String     @unique
+  employees Employee[]
+}
+
+model Workflow {
+  id               String           @id @default(uuid()) @db.Uuid
+  name             String           @unique
+  code             String           @unique
+  description      String?
+  approvalMatrices ApprovalMatrix[]
+}
+
+model ApprovalMatrix {
+  id                 String    @id @default(uuid()) @db.Uuid
+  workflowId         String    @db.Uuid
+  workflow           Workflow  @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  roleId             String    @db.Uuid
+  role               Role      @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  level              Int
+  autoApprovalRules  String?   // JSON configuration
+}
+
+model NotificationTemplate {
+  id       String @id @default(uuid()) @db.Uuid
+  name     String @unique
+  type     String // EMAIL, SMS, PUSH, SYSTEM
+  template String
+}
+
+model EmailTemplate {
+  id      String @id @default(uuid()) @db.Uuid
+  name    String @unique
+  subject String
+  body    String
+}
+
+model SmsTemplate {
+  id   String @id @default(uuid()) @db.Uuid
+  name String @unique
+  body String
+}
+
+model SystemSetting {
+  id          String  @id @default(uuid()) @db.Uuid
+  key         String  @unique
+  value       String
+  description String?
+}
+
+model FeatureFlag {
+  id          String  @id @default(uuid()) @db.Uuid
+  key         String  @unique
+  enabled     Boolean @default(false)
+  description String?
+}
+
+model ApiKey {
+  id        String    @id @default(uuid()) @db.Uuid
+  name      String
+  keyHash   String    @unique
+  active    Boolean   @default(true)
+  userId    String?   @db.Uuid
+  expiresAt DateTime?
+}
+
+model BackupSetting {
+  id          String  @id @default(uuid()) @db.Uuid
+  schedule    String
+  destination String
+  active      Boolean @default(false)
+}
+
+model License {
+  id        String   @id @default(uuid()) @db.Uuid
+  key       String   @unique
+  product   String
+  expiresAt DateTime
+  active    Boolean  @default(true)
+}
+
+// =========================================================================
+// BUSINESS MODULES
+// =========================================================================
+
+model Project {
+  id                   String       @id @default(uuid()) @db.Uuid
+  name                 String
+  buId                 String?      @db.Uuid
+  businessUnit         Department?  @relation(fields: [buId], references: [id], onDelete: SetNull)
+  client               String?
+  location             String?
+  pm                   String?      // Project Manager / Lead
+  stage                String       // Planning, Execution, Commissioning, Completed, On Hold
+  health               String       // Green, Amber, Red
+  order                Decimal?     @db.Decimal(15, 4) // Order Value (₹ Cr)
+  odate                DateTime?    // Order / LOA Date
+  cod                  DateTime?    // Scheduled COD
+  rcod                 DateTime?    // Revised COD
+  prog                 Int          @default(0) // Physical Progress (%)
+  billed               Decimal?     @db.Decimal(15, 4) // Billed to date (₹ Cr)
+  collected            Decimal?     @db.Decimal(15, 4) // Collected to date (₹ Cr)
+  milestone            String?
+  mdate                DateTime?    // Milestone Target Date
+  risks                String?      // Key Risks / Issues
+  rem                  String?      // Remarks / Updates
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+  deletedAt            DateTime?
+  deletedBy            String?
+
+  attachments          Attachment[]
+  comments             Comment[]
+
+  @@index([buId])
+}
+
+model Meeting {
+  id          String       @id @default(uuid()) @db.Uuid
+  name        String
+  cat         String       // cmd, board, review, vendor, safety, other
+  status      String       // scheduled, done, cancelled
+  agenda      String?
+  attendees   String?
+  date        String       // "YYYY-MM-DD"
+  time        String?      // "HH:MM"
+  venue       String?
+  recur       String?      // monthly, weekly, quarterly
+  notes       String?
+  notepad     String?      // meeting private notepad notes
+  notepadTs   DateTime?
+  momActions  Json?        // string array of extracted action items
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  deletedAt   DateTime?
+  deletedBy   String?
+
+  attachments Attachment[]
+  comments    Comment[]
+
+  @@index([date])
+}
+
+model Task {
+  id             String       @id @default(uuid()) @db.Uuid
+  batchId        String?
+  title          String
+  detail         String?
+  assigneeId     String?      @db.Uuid
+  assignee       User?        @relation("AssignedTasks", fields: [assigneeId], references: [id], onDelete: SetNull)
+  assignedById   String?      @db.Uuid
+  assignedBy     User?        @relation("CreatedTasks", fields: [assignedById], references: [id], onDelete: SetNull)
+  pri            String       // High, Medium, Low
+  due            String?      // "YYYY-MM-DD"
+  st             String       // Open, In Progress, Done, Closed
+  cd             String?      // "YYYY-MM-DD" completion date
+  note           String?      // Progress Note / Latest Update
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  deletedAt      DateTime?
+  deletedBy      String?
+
+  attachments    Attachment[]
+  comments       Comment[]
+
+  @@index([assigneeId])
+  @@index([assignedById])
+}
+
+model ActionItem {
+  id          String       @id @default(uuid()) @db.Uuid
+  meetingId   String?      @db.Uuid
+  meetingName String?      // e.g. Monthly Review, CMD directive
+  meetingDate String?      // "YYYY-MM-DD"
+  meetingType String?
+  item        String
+  own         String       // Owner Name
+  dept        String?      // Department / BU name
+  pri         String       // High, Medium, Low
+  due         String?      // "YYYY-MM-DD"
+  st          String       // Open, In Progress, Done, Closed
+  cd          String?      // "YYYY-MM-DD" completion date
+  rem         String?      // Remarks / Updates
+  recur       String?      // daily, weekly, monthly, quarterly
+  dep         String?      // Blocked By (Action ID)
+  assignedTo  Json?        // array of delegate target profile IDs (e.g. ["pa", "sm"])
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  deletedAt   DateTime?
+  deletedBy   String?
+
+  attachments Attachment[]
+  comments    Comment[]
+
+  @@index([meetingId])
+}
+
+model Escalation {
+  id          String       @id @default(uuid()) @db.Uuid
+  code        String?
+  proj        String       // Project Name
+  type        String       // Technical, Commercial, Regulatory, Resources, Other
+  sev         String       // Critical, High, Medium
+  desc        String?
+  by          String?      // Raised By
+  date        String?      // "YYYY-MM-DD" Date Raised
+  own         String?      // Issue Owner
+  esc         String?      // Escalated To
+  tgt         String?      // Target Resolution
+  st          String       // In Progress, Escalated, Resolved, Closed
+  res         String?      // Resolution / Action Taken
+  assignedTo  Json?        // array of delegate target profile IDs (e.g. ["pa", "sm"])
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  deletedAt   DateTime?
+  deletedBy   String?
+
+  attachments Attachment[]
+  comments    Comment[]
+}
+
+model FollowUp {
+  id          String       @id @default(uuid()) @db.Uuid
+  priority    String       // Critical, High, Medium, Low
+  bu          String?      // Business Unit
+  hd          String?      // BU Head
+  proj        String       // Project / Subject
+  with        String?      // Follow up with
+  dl          String?      // "YYYY-MM-DD" Deadline
+  desc        String?
+  st          String       // Open, In Progress, Done, Closed
+  assignedTo  Json?        // array of delegate target profile IDs (e.g. ["pa", "sm"])
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  deletedAt   DateTime?
+  deletedBy   String?
+
+  attachments Attachment[]
+  comments    Comment[]
+}
+
+model LegalCase {
+  id             String       @id @default(uuid()) @db.Uuid
+  srNo           Int?
+  group          String       // Section / Group (e.g. P&H High Court, MSME Matters, etc.)
+  filedBy        String       // Filed By / Against Hartek (e.g. Filed against HPPL, etc.)
+  nature         String       // Nature of Proceedings
+  title          String       // Party vs Party
+  caseNo         String?
+  court          String       // Court / Forum
+  counsel        String?      // External Counsel
+  entity         String?      // Group Entity (HPPL, HIPL, HARTEK Solar, etc.)
+  handler        String?      // Internal Handler (e.g. HS)
+  filed          String?      // Date Filed ("YYYY-MM-DD")
+  ldoh           String?      // Last Date of Hearing ("YYYY-MM-DD")
+  ndoh           String?      // Next Date of Hearing (Date String or text description)
+  update         String?      // Case Status / Listed For
+  status         String       // Active, Favorable, Adverse, Pending, Stayed, Settled
+  risk           String       // High, Medium, Low
+  actionRequired String?      // Action To Be Taken
+  claim          String?      // Claim Amount (Col L)
+  bg             String?      // Brief Background
+  timeline       Json         @default("[]") // array of TimelineEntry objects {date: "YYYY-MM-DD", note: "..."}
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  deletedAt      DateTime?
+  deletedBy      String?
+
+  attachments    Attachment[]
+  comments       Comment[]
+
+  @@index([status])
+  @@index([risk])
+}
+
+// =========================================================================
+// SUPPORTING DATA ENTITIES
+// =========================================================================
+
+model Attachment {
+  id           String      @id @default(uuid()) @db.Uuid
+  name         String
+  type         String
+  size         Int
+  path         String?
+  data         String?     // Base64 data URI (fallback / mock integration)
+  projectId    String?     @db.Uuid
+  project      Project?    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  meetingId    String?     @db.Uuid
+  meeting      Meeting?    @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  taskId       String?     @db.Uuid
+  task         Task?       @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  actionItemId String?     @db.Uuid
+  actionItem   ActionItem? @relation(fields: [actionItemId], references: [id], onDelete: Cascade)
+  escalationId String?     @db.Uuid
+  escalation   Escalation? @relation(fields: [escalationId], references: [id], onDelete: Cascade)
+  followUpId   String?     @db.Uuid
+  followUp     FollowUp?   @relation(fields: [followUpId], references: [id], onDelete: Cascade)
+  legalCaseId  String?     @db.Uuid
+  legalCase    LegalCase?  @relation(fields: [legalCaseId], references: [id], onDelete: Cascade)
+  createdAt    DateTime    @default(now())
+
+  @@index([projectId])
+  @@index([meetingId])
+  @@index([taskId])
+  @@index([actionItemId])
+  @@index([escalationId])
+  @@index([followUpId])
+  @@index([legalCaseId])
+}
+
+model Comment {
+  id           String      @id @default(uuid()) @db.Uuid
+  text         String
+  userId       String?     @db.Uuid
+  user         User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  projectId    String?     @db.Uuid
+  project      Project?    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  meetingId    String?     @db.Uuid
+  meeting      Meeting?    @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  taskId       String?     @db.Uuid
+  task         Task?       @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  actionItemId String?     @db.Uuid
+  actionItem   ActionItem? @relation(fields: [actionItemId], references: [id], onDelete: Cascade)
+  escalationId String?     @db.Uuid
+  escalation   Escalation? @relation(fields: [escalationId], references: [id], onDelete: Cascade)
+  followUpId   String?     @db.Uuid
+  followUp     FollowUp?   @relation(fields: [followUpId], references: [id], onDelete: Cascade)
+  legalCaseId  String?     @db.Uuid
+  legalCase    LegalCase?  @relation(fields: [legalCaseId], references: [id], onDelete: Cascade)
+  createdAt    DateTime    @default(now())
+
+  @@index([projectId])
+  @@index([meetingId])
+  @@index([taskId])
+  @@index([actionItemId])
+  @@index([escalationId])
+  @@index([followUpId])
+  @@index([legalCaseId])
+}
+
+model NotepadNote {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  text      String   @db.Text
+  images    Json     @default("[]") // array of {id: "...", name: "...", data: "base64..."}
+  created   DateTime @default(now())
+  ts        DateTime @default(now())
+
+  @@index([userId])
+}
+
+model AuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String?  @db.Uuid
+  userEmail String?
+  userName  String?
+  action    String
+  detail    String?
+  ipAddress String?
+  browser   String?
+  device    String?
+  oldValues Json?
+  newValues Json?
+  timestamp DateTime @default(now())
+
+  @@index([userId])
+  @@index([timestamp])
+}
