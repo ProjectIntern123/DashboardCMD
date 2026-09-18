@@ -807,7 +807,7 @@ export default function DashboardPage() {
       showToast('Please select at least one assignee', 'err');
       return;
     }
-    if ((endpoint === '/action-items' || endpoint === '/escalations') && (!formData.assignedTo || formData.assignedTo.length === 0)) {
+    if (endpoint === '/escalations' && (!formData.assignedTo || formData.assignedTo.length === 0)) {
       showToast('Please select at least one assignee', 'err');
       return;
     }
@@ -5190,31 +5190,27 @@ export default function DashboardPage() {
                     </select>
                   </div>
                   <div className="fg">
-                    <label>Assign To <span style={{ color: 'red' }}>*</span></label>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '8px', maxHeight: '180px', overflowY: 'auto', border: '1px solid #cbd5e1', borderRadius: '6px', padding: '12px', background: '#f8fafc' }}>
-                      {getEligibleAssignees().length === 0 ? (
-                        <div style={{ fontSize: '13px', color: '#64748b', fontStyle: 'italic' }}>
-                          No eligible employees report to you.
-                        </div>
-                      ) : (
-                        getEligibleAssignees().map((u: any) => (
-                          <label key={u.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', cursor: 'pointer' }}>
-                            <input
-                              type="checkbox"
-                              checked={formData.assignedTo?.includes(u.id) || false}
-                              onChange={e => {
-                                const ids = formData.assignedTo || [];
-                                const nextIds = e.target.checked
-                                  ? [...ids, u.id]
-                                  : ids.filter((id: string) => id !== u.id);
-                                handleFormInputChange('assignedTo', nextIds);
-                              }}
-                            />
-                            {u.name} ({u.email})
-                          </label>
-                        ))
-                      )}
-                    </div>
+                    <label>Assign To</label>
+                    <select
+                      disabled={getEligibleAssignees().length === 0}
+                      style={{
+                        opacity: getEligibleAssignees().length === 0 ? 0.6 : 1,
+                        cursor: getEligibleAssignees().length === 0 ? 'not-allowed' : 'pointer',
+                        background: getEligibleAssignees().length === 0 ? '#f1f5f9' : '#fff'
+                      }}
+                      value={Array.isArray(formData.assignedTo) ? formData.assignedTo[0] || '' : formData.assignedTo || ''}
+                      onChange={e => {
+                        const val = e.target.value;
+                        handleFormInputChange('assignedTo', val ? [val] : []);
+                      }}
+                    >
+                      <option value="">Select Assignee...</option>
+                      {getEligibleAssignees().map((u: any) => (
+                        <option key={u.id} value={u.id}>
+                          {u.name} ({u.email})
+                        </option>
+                      ))}
+                    </select>
                   </div>
                   <div className="fg">
                     <label>Update Remarks / Progress log</label>
