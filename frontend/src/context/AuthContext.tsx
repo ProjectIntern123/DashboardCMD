@@ -105,7 +105,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const hasPermission = (action: string, resource: string): boolean => {
     if (!user) return false;
-    if (user.role === 'Admin') return true;
+    if (user.role === 'Admin' || user.role === 'CMD') return true;
+    if (['Manager', 'Supervisor', 'Employee'].includes(user.role) && resource !== 'AdminControl') {
+      if (['View', 'Create', 'Edit', 'Export'].includes(action)) {
+        if (!user.permissions || user.permissions.length === 0) return true;
+        const hasExplicitResource = user.permissions.some(p => p.resource === resource);
+        if (!hasExplicitResource) return true;
+      }
+    }
     return (user.permissions || []).some(p => p.action === action && p.resource === resource);
   };
 
