@@ -93,20 +93,6 @@ export class UserService {
       const supportEmail = settings.support_email || 'support@hartek.com';
       const dateTimeStr = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
 
-      const subject = `Welcome to HARTEK CMD Dashboard - Your Account Credentials`;
-      const content = `Hello ${user.name},
-
-Your user profile has been created on the HARTEK CMD Dashboard.
-
-Here are your account credentials:
-- Login URL: ${loginUrl}
-- Email/Username: ${user.email}
-- Password: ${tempPassword}
-
-${isTempPassword ? 'Note: You have been assigned a temporary password. You will be required to change it immediately upon your first login.' : 'Please use the password provided by your administrator to sign in.'}
-
-Thank you`;
-
       await this.settingsMailer.sendTemplateEmail(
         user.email,
         'USER_CREATED',
@@ -120,8 +106,6 @@ Thank you`;
           support_email: supportEmail,
           date_time: dateTimeStr,
         },
-        subject,
-        content,
       );
       console.log(`[USER CREATION EMAIL] Sent credentials to ${user.email}`);
     } catch (err) {
@@ -223,8 +207,6 @@ Thank you`;
               support_email: supportEmail,
               date_time: dateTimeStr,
             },
-            'Your Account Has Been Activated - HARTEK CMD Dashboard',
-            `Hello ${updatedUser.name},\n\nYour HARTEK CMD account (${updatedUser.email}) has been activated.\n\nLogin Portal: ${frontendUrl}/login`,
           );
         } else if (dto.active === false) {
           await this.settingsMailer.sendTemplateEmail(
@@ -237,8 +219,6 @@ Thank you`;
               support_email: supportEmail,
               date_time: dateTimeStr,
             },
-            'Notice: Your HARTEK CMD Account Access Has Been Deactivated',
-            `Hello ${updatedUser.name},\n\nPlease be advised that your HARTEK CMD account access (${updatedUser.email}) has been deactivated by system administration.`,
           );
         }
       } catch (err) {
@@ -272,10 +252,6 @@ Thank you`;
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     const dateTimeStr = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
 
-    // Send temporary password to user via SMTP using template mailer
-    const defaultSubject = 'HARTEK CMD - Temporary Password Key Reset';
-    const defaultText = `Hello ${user.name},\n\nAn administrator has reset your password credentials.\n\nYour Temporary Password Key is: ${tempPassword}\n\nYou will be required to configure a new secure password on your next login.`;
-    
     const emailSent = await this.settingsMailer.sendTemplateEmail(
       user.email,
       'PASSWORD_CHANGED',
@@ -288,8 +264,6 @@ Thank you`;
         support_email: supportEmail,
         login_url: `${frontendUrl}/login`,
       },
-      defaultSubject,
-      defaultText,
     );
 
     console.log(`[TEMP PASSWORD RESET] User: ${user.email} | Key: ${tempPassword}`);

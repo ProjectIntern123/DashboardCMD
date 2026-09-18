@@ -306,9 +306,10 @@ export class EmailTemplatesService implements OnModuleInit {
   }
 
   // Production-Safe Fallback Template Resolver
-  async renderForEvent(eventKey: string, variables: Record<string, any>, fallbackSubject: string, fallbackBody: string) {
+  async renderForEvent(eventKey: string, variables: Record<string, any>, fallbackSubject?: string, fallbackBody?: string) {
+    const formattedKey = eventKey.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+
     try {
-      const formattedKey = eventKey.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_');
       const template = await this.prisma.emailTemplate.findUnique({
         where: { eventKey: formattedKey },
       });
@@ -321,13 +322,17 @@ export class EmailTemplatesService implements OnModuleInit {
         };
       }
     } catch (err) {
-      console.warn(`[EMAIL TEMPLATES] Render for event "${eventKey}" failed, using fallback:`, err.message);
+      console.warn(`[EMAIL TEMPLATES] Render for event "${eventKey}" failed, falling back to system event default:`, err.message);
     }
 
-    // Fallback if template is missing, inactive, or database error occurred
+    // Fall back to system default event template definition
+    const systemEvent = SYSTEM_NOTIFICATION_EVENTS.find((e) => e.eventKey === formattedKey);
+    const defaultSubj = (fallbackSubject && fallbackSubject.trim()) || systemEvent?.defaultSubject || `HARTEK CMD Notification - ${formattedKey}`;
+    const defaultBody = (fallbackBody && fallbackBody.trim()) || systemEvent?.defaultBody || `Hello {{user_name}},\n\nThis is an automated notification from {{company_name}}.`;
+
     return {
-      subject: this.renderString(fallbackSubject, variables),
-      body: this.renderString(fallbackBody, variables),
+      subject: this.renderString(defaultSubj, variables),
+      body: this.renderString(defaultBody, variables),
       usingCustomTemplate: false,
     };
   }

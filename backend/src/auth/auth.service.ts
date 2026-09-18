@@ -96,8 +96,6 @@ export class AuthService {
             support_email: supportEmail,
             date_time: dateTimeStr,
           },
-          'HARTEK CMD - Multi-Factor Authentication OTP Code',
-          `Hello ${user.name},\n\nYour One-Time Verification Code is: ${otpCode}\n\nThis verification code expires in 5 minutes.`
         );
 
         // SIMULATION ONLY: Log OTP code in backend console for developer visibility
@@ -324,8 +322,6 @@ export class AuthService {
         support_email: supportEmail,
         date_time: dateTimeStr,
       },
-      'HARTEK CMD - Account Password Reset OTP',
-      emailBody,
     );
 
     console.log(`[PASSWORD RESET OTP] User: ${user.email} | Code: ${otpCode} | Sent: ${emailSent} | Expires: 15 mins`);
@@ -386,8 +382,6 @@ export class AuthService {
           date_time: dateTimeStr,
           login_url: `${frontendUrl}/login`,
         },
-        'Security Alert: Your HARTEK CMD Password Has Been Updated',
-        `Hello ${user.name},\n\nThis is a security notification to confirm that your HARTEK CMD account password was changed successfully on ${dateTimeStr}.`,
       );
     } catch (err) {
       console.error('[PASSWORD CHANGED EMAIL ERROR]', err);
@@ -430,8 +424,6 @@ export class AuthService {
           date_time: dateTimeStr,
           login_url: `${frontendUrl}/login`,
         },
-        'Security Alert: Your HARTEK CMD Password Has Been Updated',
-        `Hello ${user.name},\n\nThis is a security notification to confirm that your HARTEK CMD account password was changed successfully on ${dateTimeStr}.`,
       );
     } catch (err) {
       console.error('[PASSWORD CHANGED EMAIL ERROR]', err);

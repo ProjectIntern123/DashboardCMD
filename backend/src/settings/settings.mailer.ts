@@ -134,12 +134,12 @@ export class SettingsMailer {
     to: string,
     eventKey: string,
     variables: Record<string, any>,
-    defaultSubject: string,
-    defaultText: string,
+    defaultSubject?: string,
+    defaultText?: string,
     overrides?: Record<string, string>,
   ): Promise<boolean> {
-    let subject = defaultSubject;
-    let text = defaultText;
+    let subject = defaultSubject || '';
+    let text = defaultText || '';
 
     if (this.emailTemplatesService) {
       try {
