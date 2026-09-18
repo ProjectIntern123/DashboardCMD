@@ -314,18 +314,30 @@ export class EmailTemplatesService implements OnModuleInit {
         where: { eventKey: formattedKey },
       });
 
-      if (template && template.isActive && template.subject && template.body) {
-        return {
-          subject: this.renderString(template.subject, variables),
-          body: this.renderString(template.body, variables),
-          usingCustomTemplate: true,
-        };
+      if (template) {
+        if (!template.isActive) {
+          return {
+            subject: '',
+            body: '',
+            isDisabled: true,
+            usingCustomTemplate: false,
+          };
+        }
+
+        if (template.subject && template.body) {
+          return {
+            subject: this.renderString(template.subject, variables),
+            body: this.renderString(template.body, variables),
+            isDisabled: false,
+            usingCustomTemplate: true,
+          };
+        }
       }
     } catch (err) {
-      console.warn(`[EMAIL TEMPLATES] Render for event "${eventKey}" failed, falling back to system event default:`, err.message);
+      console.warn(`[EMAIL TEMPLATES] Render for event "${eventKey}" failed:`, err.message);
     }
 
-    // Fall back to system default event template definition
+    // Fall back to system default event template definition only if template record was missing entirely
     const systemEvent = SYSTEM_NOTIFICATION_EVENTS.find((e) => e.eventKey === formattedKey);
     const defaultSubj = (fallbackSubject && fallbackSubject.trim()) || systemEvent?.defaultSubject || `HARTEK CMD Notification - ${formattedKey}`;
     const defaultBody = (fallbackBody && fallbackBody.trim()) || systemEvent?.defaultBody || `Hello {{user_name}},\n\nThis is an automated notification from {{company_name}}.`;
@@ -333,6 +345,7 @@ export class EmailTemplatesService implements OnModuleInit {
     return {
       subject: this.renderString(defaultSubj, variables),
       body: this.renderString(defaultBody, variables),
+      isDisabled: false,
       usingCustomTemplate: false,
     };
   }

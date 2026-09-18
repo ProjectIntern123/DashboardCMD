@@ -340,9 +340,6 @@ export default function AdminConsolePage() {
         }
       }
 
-      if (!payload.managerId) {
-        delete (payload as any).managerId;
-      }
       if (payload.id) {
         await api.put(`/users/${payload.id}`, payload);
         showToast('User roster record updated');
@@ -1650,8 +1647,8 @@ export default function AdminConsolePage() {
                                     email: u.email,
                                     name: u.name,
                                     password: '',
-                                    roleId: u.roleId || '',
-                                    managerId: u.managerId || '',
+                                    roleId: u.roleId || u.role?.id || '',
+                                    managerId: u.managerId || u.manager?.id || '',
                                     active: u.active
                                   });
                                   setShowUserModal(true);

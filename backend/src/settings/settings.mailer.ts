@@ -144,6 +144,10 @@ export class SettingsMailer {
     if (this.emailTemplatesService) {
       try {
         const rendered = await this.emailTemplatesService.renderForEvent(eventKey, variables, defaultSubject, defaultText);
+        if (rendered.isDisabled) {
+          this.logger.log(`[EMAIL TEMPLATES] Email dispatch for event "${eventKey}" skipped because template is set to inactive.`);
+          return false;
+        }
         subject = rendered.subject;
         text = rendered.body;
       } catch (err: any) {

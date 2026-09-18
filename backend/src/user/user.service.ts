@@ -34,7 +34,8 @@ export class UserService {
         mfaEnabled: true,
         createdAt: true,
         updatedAt: true,
-        requiresPasswordReset: true,
+        roleId: true,
+        managerId: true,
         role: {
           select: {
             id: true,
@@ -171,13 +172,17 @@ export class UserService {
       }
     }
 
-    const updateData: any = {
-      name: dto.name,
-      roleId: dto.roleId === '' ? null : dto.roleId,
-      managerId: dto.managerId === '' || !dto.managerId ? null : dto.managerId,
-      active: dto.active,
-    };
-
+    const updateData: any = {};
+    if (dto.name !== undefined) updateData.name = dto.name.trim();
+    if (dto.roleId !== undefined) {
+      updateData.roleId = dto.roleId === '' || dto.roleId === 'none' ? null : dto.roleId;
+    }
+    if (dto.managerId !== undefined) {
+      updateData.managerId = dto.managerId === '' || dto.managerId === 'none' || !dto.managerId ? null : dto.managerId;
+    }
+    if (dto.active !== undefined) {
+      updateData.active = dto.active;
+    }
     if (dto.password) {
       updateData.passwordHash = await bcrypt.hash(dto.password, 10);
     }
@@ -185,6 +190,10 @@ export class UserService {
     const updatedUser = await this.prisma.user.update({
       where: { id },
       data: updateData,
+      include: {
+        role: true,
+        manager: true,
+      },
     });
 
     // Send status change notification email if account active status changed
@@ -250,19 +259,23 @@ export class UserService {
     const settings: any = await this.settingsService.getAllSettings().catch(() => ({}));
     const supportEmail = settings.support_email || 'support@hartek.com';
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const resetUrl = `${frontendUrl}/forgot-password?email=${encodeURIComponent(user.email)}&otpSent=true`;
     const dateTimeStr = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
 
     const emailSent = await this.settingsMailer.sendTemplateEmail(
       user.email,
-      'PASSWORD_CHANGED',
+      'PASSWORD_RESET',
       {
         user_name: user.name,
         user_email: user.email,
+        otp_code: tempPassword,
         temporary_password: tempPassword,
-        company_name: 'HARTEK Group',
-        date_time: dateTimeStr,
-        support_email: supportEmail,
+        otp_expires_in: '15',
+        reset_link: resetUrl,
         login_url: `${frontendUrl}/login`,
+        company_name: 'HARTEK Group',
+        support_email: supportEmail,
+        date_time: dateTimeStr,
       },
     );
 
