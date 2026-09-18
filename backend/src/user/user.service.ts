@@ -13,7 +13,7 @@ export class UserService {
   ) { }
 
   async findAll(actorRole: string) {
-    const isSystemAdmin = actorRole === 'Admin';
+    const isSystemAdmin = actorRole === 'Admin' || actorRole === 'CMD';
 
     const where: any = {};
 

@@ -11,7 +11,7 @@ export class TaskService {
     const batchId = Math.random().toString(36).substring(2, 10);
     const createdTasks = [];
 
-    const isSystemAdmin = roleName === 'Admin';
+    const isSystemAdmin = roleName === 'Admin' || roleName === 'CMD';
     for (const assigneeId of data.assigneeIds) {
       if (!isSystemAdmin) {
         const assigneeUser = await this.prisma.user.findUnique({
@@ -58,12 +58,13 @@ export class TaskService {
   async findAll(userId: string, roleName: string, filters: { search?: string; pri?: string; st?: string; assigneeId?: string }) {
     const where: any = { deletedAt: null };
 
-    // Enforce access boundary: see tasks assigned to you OR created by you (except for Super Admin, Admin, and Viewer roles)
-    const isSystemAdminOrViewer = roleName === 'Admin' || roleName === 'Viewer';
+    // Enforce access boundary: see tasks assigned to you, created by you, OR assigned to employees who report to you
+    const isSystemAdminOrViewer = roleName === 'Admin' || roleName === 'CMD' || roleName === 'Viewer';
     if (!isSystemAdminOrViewer) {
       where.OR = [
         { assigneeId: userId },
-        { assignedById: userId }
+        { assignedById: userId },
+        { assignee: { managerId: userId } }
       ];
     }
 

@@ -92,7 +92,7 @@ export const TasksTab: React.FC<TasksTabProps> = ({
                   style={{ width: '100%' }}
                 />
               </div>
-              {isCMD && hasPermission('Create', 'Tasks') && (
+              {hasPermission('Create', 'Tasks') && (
                 <button className="btn-add" onClick={() => openAddModal('task')} style={{ whiteSpace: 'nowrap' }}>
                   + Assign Task
                 </button>

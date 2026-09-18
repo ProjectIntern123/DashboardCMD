@@ -1518,19 +1518,18 @@ export default function DashboardPage() {
     });
 
 
-  // Task filtering & security checks to match original HTML
-  const isCMD = user?.role === 'Admin' || user?.email === 'cmd@hartek.com';
-  const isPA = user?.email === 'executive@hartek.com';
-  const isSM = user?.email === 'ea@hartek.com';
+  // Task filtering & security checks
+  const isCMD = user?.role === 'CMD';
+  const isAdmin = user?.role === 'Admin';
   const hasTaskInbox = true;
 
   const getEligibleAssignees = () => {
     if (!user) return [];
-    const isSystemAdmin = user.role === 'Admin';
-    if (isSystemAdmin) {
-      return usersList.filter((u: any) => u.id !== user.id && u.active);
+    const isExecutiveOrAdmin = user.role === 'Admin' || user.role === 'CMD';
+    if (isExecutiveOrAdmin) {
+      return usersList.filter((u: any) => u.id !== user.id && u.active !== false);
     } else {
-      return usersList.filter((u: any) => u.managerId === user.id && u.active);
+      return usersList.filter((u: any) => u.managerId === user.id && u.active !== false);
     }
   };
 
@@ -1551,9 +1550,11 @@ export default function DashboardPage() {
   };
 
   const mineTasks = tasks.filter(t => {
-    // Admins/CMD see all tasks. Others see tasks where they are assignee or creator.
-    if (isCMD) return true;
-    return t.assigneeId === user?.id || t.assignedById === user?.id;
+    // Admins and CMD role see all tasks in tracking view.
+    if (user?.role === 'Admin' || user?.role === 'CMD') return true;
+    // Reporting managers see tasks assigned to them, created by them, or assigned to employees who report to them.
+    const isDirectReportAssignee = usersList.some(u => u.managerId === user?.id && u.id === t.assigneeId);
+    return t.assigneeId === user?.id || t.assignedById === user?.id || isDirectReportAssignee;
   });
 
   const matchedTasks = mineTasks.filter(t => {
@@ -2246,7 +2247,7 @@ export default function DashboardPage() {
                         style={{ width: '100%' }}
                       />
                     </div>
-                    {isCMD && hasPermission('Create', 'Tasks') && (
+                    {hasPermission('Create', 'Tasks') && (
                       <button className="btn-add" onClick={() => openAddModal('task')} style={{ whiteSpace: 'nowrap' }}>
                         + Assign Task
                       </button>

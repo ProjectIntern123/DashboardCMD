@@ -15,7 +15,7 @@ export class EscalationService {
       data: {
         code,
         proj: data.proj,
-        type: createActionItemType(data.type),
+        type: data.type || 'Technical',
         sev: data.sev,
         desc: data.desc || null,
         by: data.by || null,
