@@ -189,9 +189,9 @@ export const ProjectsTab: React.FC<ProjectsTabProps> = ({
                   <div className="proj-id-block">
                     <div className="proj-name">{p.name || 'Untitled Project'}</div>
                     <div className="proj-meta-line">
-                      {p.bu && <span className="bu-chip" style={{ fontSize: '10px', background: '#e0e7ff', color: '#3730a3', padding: '2px 6px', borderRadius: '4px', marginRight: '6px', fontWeight: 600 }}>{p.bu}</span>}
+                      {(p.bu || p.businessUnit?.name) && <span className="bu-chip" style={{ fontSize: '10px', background: '#e0e7ff', color: '#3730a3', padding: '2px 6px', borderRadius: '4px', marginRight: '6px', fontWeight: 600 }}>{p.bu || p.businessUnit?.name}</span>}
                       {p.client && `${p.client}`}
-                      {p.loc && ` · ${p.loc}`}
+                      {(p.location || p.loc) && ` · ${p.location || p.loc}`}
                     </div>
                   </div>
                   <div className={`proj-health proj-health-${hCls}`}>
@@ -260,7 +260,7 @@ export const ProjectsTab: React.FC<ProjectsTabProps> = ({
                 >
                   <td style={{ padding: '12px', fontWeight: 600 }}>{p.name}</td>
                   <td style={{ padding: '12px' }}>{p.pm || '—'}</td>
-                  <td style={{ padding: '12px' }}>{p.bu || '—'}</td>
+                  <td style={{ padding: '12px' }}>{p.bu || p.businessUnit?.name || '—'}</td>
                   <td style={{ padding: '12px', textAlign: 'center' }}>
                     <span style={{ fontWeight: 600 }}>{p.stage || '—'}</span>
                   </td>

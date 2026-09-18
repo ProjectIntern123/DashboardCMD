@@ -100,13 +100,11 @@ async function main() {
     }
   });
 
-  // Employee: View on everything, Create/Edit on Tasks & Create/Edit/Delete on Notepad
+  // Employee: View, Create, Edit, and Export on all business items (Projects, Calendar, Tasks, Actions, Escalations, Followups, Legal, Notepad). Plus Delete on Notepad.
   dbPermissions.forEach(p => {
-    if (p.action === 'View' && p.resource !== 'AdminControl') {
+    if (p.resource !== 'AdminControl' && ['View', 'Create', 'Edit', 'Export'].includes(p.action)) {
       rolePermissionRelations.push({ roleId: roles['Employee'].id, permissionId: p.id });
-    } else if (p.resource === 'Notepad' && ['Create', 'Edit', 'Delete'].includes(p.action)) {
-      rolePermissionRelations.push({ roleId: roles['Employee'].id, permissionId: p.id });
-    } else if (p.resource === 'Tasks' && ['Create', 'Edit'].includes(p.action)) {
+    } else if (p.resource === 'Notepad' && p.action === 'Delete') {
       rolePermissionRelations.push({ roleId: roles['Employee'].id, permissionId: p.id });
     }
   });
