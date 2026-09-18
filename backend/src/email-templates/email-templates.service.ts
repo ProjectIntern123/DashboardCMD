@@ -133,11 +133,13 @@ export class EmailTemplatesService implements OnModuleInit {
 
   async onModuleInit() {
     try {
-      // Seed initial default notification templates if empty
-      const existingCount = await this.prisma.emailTemplate.count();
-      if (existingCount === 0) {
-        console.log('[EMAIL TEMPLATES] Initializing default email templates in database...');
-        for (const evt of SYSTEM_NOTIFICATION_EVENTS) {
+      console.log('[EMAIL TEMPLATES] Synchronizing default system email templates in database...');
+      for (const evt of SYSTEM_NOTIFICATION_EVENTS) {
+        const existing = await this.prisma.emailTemplate.findUnique({
+          where: { eventKey: evt.eventKey },
+        });
+
+        if (!existing) {
           await this.prisma.emailTemplate.create({
             data: {
               name: evt.name,
@@ -148,11 +150,12 @@ export class EmailTemplatesService implements OnModuleInit {
               isActive: true,
             },
           });
+          console.log(`[EMAIL TEMPLATES] Seeded missing template for event "${evt.eventKey}"`);
         }
-        console.log('[EMAIL TEMPLATES] Default email templates successfully created.');
       }
+      console.log('[EMAIL TEMPLATES] Default system email templates successfully synchronized.');
     } catch (e) {
-      console.error('[EMAIL TEMPLATES] Seeding check skipped/failed:', e.message);
+      console.error('[EMAIL TEMPLATES] Seeding/Sync check skipped/failed:', e.message);
     }
   }
 
@@ -305,8 +308,9 @@ export class EmailTemplatesService implements OnModuleInit {
   // Production-Safe Fallback Template Resolver
   async renderForEvent(eventKey: string, variables: Record<string, any>, fallbackSubject: string, fallbackBody: string) {
     try {
+      const formattedKey = eventKey.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_');
       const template = await this.prisma.emailTemplate.findUnique({
-        where: { eventKey: eventKey.trim().toUpperCase() },
+        where: { eventKey: formattedKey },
       });
 
       if (template && template.isActive && template.subject && template.body) {
