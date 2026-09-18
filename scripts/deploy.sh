@@ -38,7 +38,8 @@ echo ""
 # 4. Run Database Schema Sync (Non-destructive)
 echo "[STEP 4/6] Synchronizing Database Schema..."
 cd backend
-npx prisma db push --accept-data-loss
+npx prisma generate
+npx prisma db push --skip-generate
 cd ..
 echo "[SUCCESS] Database schema in sync."
 echo ""
