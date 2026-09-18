@@ -591,6 +591,27 @@ export default function EmailTemplatesAdmin({ isDark, showToast }: EmailTemplate
                 />
               </div>
 
+              {/* Security & Variable Notice Banner */}
+              <div
+                style={{
+                  padding: '10px 14px',
+                  borderRadius: '8px',
+                  background: isDark ? 'rgba(59, 130, 246, 0.15)' : '#eff6ff',
+                  border: isDark ? '1px solid #1e40af' : '1px solid #bfdbfe',
+                  color: isDark ? '#93c5fd' : '#1e40af',
+                  fontSize: '12px',
+                  lineHeight: '1.4',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px',
+                }}
+              >
+                <FaInfoCircle style={{ flexShrink: 0, fontSize: '15px' }} />
+                <span>
+                  <strong>Template Routing Guard:</strong> Template variables control email subject and body content. Recipient email routing (<code style={{ fontFamily: 'monospace' }}>TO</code>) is strictly enforced by application business logic and target user security profiles.
+                </span>
+              </div>
+
               {/* Available Dynamic Variables */}
               <div>
                 <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, marginBottom: '6px', color: isDark ? '#cbd5e1' : '#334155' }}>

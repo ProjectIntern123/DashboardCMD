@@ -42,6 +42,7 @@ export class SettingsService {
     'smtp_host',
     'smtp_port',
     'smtp_encryption',
+    'support_email',
     'apply_branding_to_admin',
     'admin_theme_mode',
     // PWA branding & manifest configurations
@@ -93,6 +94,7 @@ export class SettingsService {
     smtp_host: 'smtp.office365.com',
     smtp_port: '587',
     smtp_encryption: 'STARTTLS',
+    support_email: 'support@hartek.com',
     // PWA Defaults
     pwa_name: 'HARTEK CMD Office',
     pwa_short_name: 'HARTEK CMD',

@@ -2,12 +2,14 @@ import { Injectable, BadRequestException, NotFoundException } from '@nestjs/comm
 import { PrismaService } from '../prisma/prisma.service';
 import * as bcrypt from 'bcrypt';
 import { SettingsMailer } from '../settings/settings.mailer';
+import { SettingsService } from '../settings/settings.service';
 
 @Injectable()
 export class UserService {
   constructor(
     private prisma: PrismaService,
     private settingsMailer: SettingsMailer,
+    private settingsService: SettingsService,
   ) { }
 
   async findAll(actorRole: string) {
@@ -29,9 +31,16 @@ export class UserService {
         name: true,
         initials: true,
         active: true,
-        roleId: true,
-        departmentId: true,
-        managerId: true,
+        mfaEnabled: true,
+        createdAt: true,
+        updatedAt: true,
+        requiresPasswordReset: true,
+        role: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
         manager: {
           select: {
             id: true,
@@ -39,44 +48,31 @@ export class UserService {
             email: true,
           },
         },
-        createdAt: true,
-        role: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
       },
-      orderBy: { name: 'asc' },
+      orderBy: { createdAt: 'desc' },
     });
   }
 
   async create(dto: any) {
     const existing = await this.prisma.user.findUnique({
-      where: { email: dto.email },
+      where: { email: dto.email.trim().toLowerCase() },
     });
 
     if (existing) {
-      throw new BadRequestException('A profile with this email already exists.');
+      throw new BadRequestException('A user with this email address already exists.');
     }
 
+    // Default password logic if omitted or provided
+    const tempPassword = dto.password ? dto.password : Math.random().toString(36).substring(2, 10);
+    const passwordHash = await bcrypt.hash(tempPassword, 10);
     const isTempPassword = !dto.password;
-    const tempPassword = dto.password || require('crypto').randomBytes(6).toString('hex');
-    const saltRounds = 10;
-    const passwordHash = await bcrypt.hash(tempPassword, saltRounds);
 
-    // Compute initials from name
-    const initials = dto.name
-      .split(' ')
-      .map((part: string) => part[0])
-      .join('')
-      .substring(0, 3)
-      .toUpperCase() || 'US';
+    const initials = dto.name ? dto.name.split(' ').map((p: string) => p[0]).join('').substring(0, 3).toUpperCase() : 'US';
 
     const user = await this.prisma.user.create({
       data: {
-        email: dto.email,
-        name: dto.name,
+        email: dto.email.trim().toLowerCase(),
+        name: dto.name.trim(),
         initials,
         passwordHash,
         roleId: dto.roleId || null,
@@ -84,12 +80,20 @@ export class UserService {
         active: dto.active !== undefined ? dto.active : true,
         requiresPasswordReset: isTempPassword,
       },
+      include: {
+        role: true,
+      },
     });
 
-    // Send credentials email
+    // Send onboarding credentials email via SMTP using dynamic Email Templates system with fallback
     try {
-      const loginUrl = process.env.FRONTEND_URL || 'cmd.hartek.tech';
-      const subject = 'Welcome to HARTEK CMD Dashboard - Your Credentials';
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      const loginUrl = `${frontendUrl}/login`;
+      const settings: any = await this.settingsService.getAllSettings().catch(() => ({}));
+      const supportEmail = settings.support_email || 'support@hartek.com';
+      const dateTimeStr = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+
+      const subject = `Welcome to HARTEK CMD Dashboard - Your Account Credentials`;
       const content = `Hello ${user.name},
 
 Your user profile has been created on the HARTEK CMD Dashboard.
@@ -113,6 +117,8 @@ Thank you`;
           login_url: loginUrl,
           company_name: 'HARTEK Group',
           is_temp_password: isTempPassword,
+          support_email: supportEmail,
+          date_time: dateTimeStr,
         },
         subject,
         content,
@@ -192,10 +198,55 @@ Thank you`;
       updateData.passwordHash = await bcrypt.hash(dto.password, 10);
     }
 
-    return this.prisma.user.update({
+    const updatedUser = await this.prisma.user.update({
       where: { id },
       data: updateData,
     });
+
+    // Send status change notification email if account active status changed
+    if (dto.active !== undefined && dto.active !== user.active) {
+      try {
+        const settings: any = await this.settingsService.getAllSettings().catch(() => ({}));
+        const supportEmail = settings.support_email || 'support@hartek.com';
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+        const dateTimeStr = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+
+        if (dto.active === true) {
+          await this.settingsMailer.sendTemplateEmail(
+            updatedUser.email,
+            'ACCOUNT_ACTIVATED',
+            {
+              user_name: updatedUser.name,
+              user_email: updatedUser.email,
+              login_url: `${frontendUrl}/login`,
+              company_name: 'HARTEK Group',
+              support_email: supportEmail,
+              date_time: dateTimeStr,
+            },
+            'Your Account Has Been Activated - HARTEK CMD Dashboard',
+            `Hello ${updatedUser.name},\n\nYour HARTEK CMD account (${updatedUser.email}) has been activated.\n\nLogin Portal: ${frontendUrl}/login`,
+          );
+        } else if (dto.active === false) {
+          await this.settingsMailer.sendTemplateEmail(
+            updatedUser.email,
+            'ACCOUNT_DEACTIVATED',
+            {
+              user_name: updatedUser.name,
+              user_email: updatedUser.email,
+              company_name: 'HARTEK Group',
+              support_email: supportEmail,
+              date_time: dateTimeStr,
+            },
+            'Notice: Your HARTEK CMD Account Access Has Been Deactivated',
+            `Hello ${updatedUser.name},\n\nPlease be advised that your HARTEK CMD account access (${updatedUser.email}) has been deactivated by system administration.`,
+          );
+        }
+      } catch (err) {
+        console.error('[ACCOUNT STATUS CHANGE EMAIL ERROR]', err);
+      }
+    }
+
+    return updatedUser;
   }
 
   async resetPasswordTemp(id: string) {
@@ -216,6 +267,11 @@ Thank you`;
       },
     });
 
+    const settings: any = await this.settingsService.getAllSettings().catch(() => ({}));
+    const supportEmail = settings.support_email || 'support@hartek.com';
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const dateTimeStr = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+
     // Send temporary password to user via SMTP using template mailer
     const defaultSubject = 'HARTEK CMD - Temporary Password Key Reset';
     const defaultText = `Hello ${user.name},\n\nAn administrator has reset your password credentials.\n\nYour Temporary Password Key is: ${tempPassword}\n\nYou will be required to configure a new secure password on your next login.`;
@@ -228,8 +284,9 @@ Thank you`;
         user_email: user.email,
         temporary_password: tempPassword,
         company_name: 'HARTEK Group',
-        date_time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
-        support_email: 'support@hartek.com',
+        date_time: dateTimeStr,
+        support_email: supportEmail,
+        login_url: `${frontendUrl}/login`,
       },
       defaultSubject,
       defaultText,

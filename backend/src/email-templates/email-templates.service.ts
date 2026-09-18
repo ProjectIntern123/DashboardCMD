@@ -17,12 +17,13 @@ Your verification details:
 - OTP Code: {{otp_code}}
 - Expires in: {{otp_expires_in}} minutes
 - Account Email: {{user_email}}
+- Reset Link: {{reset_link}}
 
-If you did not request a password reset, please ignore this email or contact your administrator.
+If you did not request a password reset, please ignore this email or contact security at {{support_email}}.
 
 Best Regards,
 {{company_name}} Administrator`,
-    availableVariables: ['user_name', 'user_email', 'otp_code', 'otp_expires_in', 'reset_link', 'login_url', 'company_name'],
+    availableVariables: ['user_name', 'user_email', 'otp_code', 'otp_expires_in', 'reset_link', 'login_url', 'company_name', 'support_email', 'date_time'],
   },
   {
     eventKey: 'USER_CREATED',
@@ -38,13 +39,11 @@ Here are your account login credentials:
 - Username / Email: {{user_email}}
 - Temporary Password: {{temporary_password}}
 
-{{#if is_temp_password}}
 Note: You have been assigned a temporary password. You will be required to change it upon first login.
-{{/if}}
 
 Thank You,
 {{company_name}} Corporate Office`,
-    availableVariables: ['user_name', 'user_email', 'temporary_password', 'login_url', 'company_name'],
+    availableVariables: ['user_name', 'user_email', 'temporary_password', 'is_temp_password', 'login_url', 'company_name', 'support_email', 'date_time'],
   },
   {
     eventKey: 'PASSWORD_CHANGED',
@@ -59,7 +58,7 @@ If you did not perform this change, please immediately contact security at {{sup
 
 Best Regards,
 {{company_name}} IT Security Team`,
-    availableVariables: ['user_name', 'user_email', 'date_time', 'company_name', 'support_email'],
+    availableVariables: ['user_name', 'user_email', 'date_time', 'company_name', 'support_email', 'login_url', 'temporary_password'],
   },
   {
     eventKey: 'ACCOUNT_ACTIVATED',
@@ -75,7 +74,7 @@ Login Portal: {{login_url}}
 
 Welcome back!
 {{company_name}} Admin Team`,
-    availableVariables: ['user_name', 'user_email', 'login_url', 'company_name'],
+    availableVariables: ['user_name', 'user_email', 'login_url', 'company_name', 'support_email', 'date_time'],
   },
   {
     eventKey: 'ACCOUNT_DEACTIVATED',
@@ -86,11 +85,11 @@ Welcome back!
 
 Please be advised that your HARTEK CMD account access ({{user_email}}) has been deactivated by system administration.
 
-If you believe this is an error or require assistance, please contact your department manager or IT support.
+If you believe this is an error or require assistance, please contact IT support at {{support_email}}.
 
 Thank You,
 {{company_name}} Corporate Office`,
-    availableVariables: ['user_name', 'user_email', 'company_name'],
+    availableVariables: ['user_name', 'user_email', 'company_name', 'support_email', 'date_time'],
   },
   {
     eventKey: 'WELCOME_EMAIL',
@@ -103,11 +102,28 @@ Welcome aboard! You have been granted access to the HARTEK Group CMD Command Cen
 
 Quick Access Link: {{login_url}}
 
-If you have any questions regarding your access role or assigned modules, feel free to reach out to your team lead.
+If you have any questions regarding your access role or assigned modules, feel free to reach out to {{support_email}}.
 
 Best Regards,
 {{company_name}} Executive Management`,
-    availableVariables: ['user_name', 'user_email', 'login_url', 'company_name'],
+    availableVariables: ['user_name', 'user_email', 'login_url', 'company_name', 'support_email', 'date_time'],
+  },
+  {
+    eventKey: 'MFA_OTP',
+    name: 'MFA OTP Verification Code',
+    description: 'Sent when a user requests a Multi-Factor Authentication OTP code during sign in.',
+    defaultSubject: 'HARTEK CMD - Multi-Factor Authentication OTP Code',
+    defaultBody: `Hello {{user_name}},
+
+Your One-Time Verification Code is: {{otp_code}}
+
+This verification code expires in {{otp_expires_in}} minutes.
+
+If you did not request this verification code, please immediately contact security at {{support_email}}.
+
+Best Regards,
+{{company_name}} Security Team`,
+    availableVariables: ['user_name', 'user_email', 'otp_code', 'otp_expires_in', 'login_url', 'company_name', 'support_email', 'date_time'],
   },
 ];
 
@@ -150,7 +166,7 @@ export class EmailTemplatesService implements OnModuleInit {
       const metadata = SYSTEM_NOTIFICATION_EVENTS.find((e) => e.eventKey === t.eventKey);
       return {
         ...t,
-        availableVariables: metadata?.availableVariables || ['user_name', 'user_email', 'company_name', 'login_url'],
+        availableVariables: metadata?.availableVariables || ['user_name', 'user_email', 'company_name', 'login_url', 'support_email', 'date_time'],
       };
     });
   }
@@ -164,7 +180,7 @@ export class EmailTemplatesService implements OnModuleInit {
     const metadata = SYSTEM_NOTIFICATION_EVENTS.find((e) => e.eventKey === template.eventKey);
     return {
       ...template,
-      availableVariables: metadata?.availableVariables || ['user_name', 'user_email', 'company_name', 'login_url'],
+      availableVariables: metadata?.availableVariables || ['user_name', 'user_email', 'company_name', 'login_url', 'support_email', 'date_time'],
     };
   }
 
@@ -261,8 +277,8 @@ export class EmailTemplatesService implements OnModuleInit {
     }
 
     const defaultSamples: Record<string, string> = {
-      user_name: 'Pankaj Rawat',
-      user_email: 'pankaj.rawat@hartek.com',
+      user_name: 'John Doe',
+      user_email: 'john.doe@example.com',
       otp_code: '482910',
       otp_expires_in: '10',
       temporary_password: 'x9z1ryT7SS81',
@@ -271,6 +287,7 @@ export class EmailTemplatesService implements OnModuleInit {
       company_name: 'HARTEK Group',
       date_time: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
       support_email: 'support@hartek.com',
+      is_temp_password: 'true',
     };
 
     const vars = { ...defaultSamples, ...(payload.sampleVariables || {}) };

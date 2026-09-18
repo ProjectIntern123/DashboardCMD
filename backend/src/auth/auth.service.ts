@@ -8,6 +8,7 @@ import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 
 import { SettingsMailer } from '../settings/settings.mailer';
+import { SettingsService } from '../settings/settings.service';
 
 @Injectable()
 export class AuthService {
@@ -15,6 +16,7 @@ export class AuthService {
     private prisma: PrismaService,
     private jwtService: JwtService,
     private settingsMailer: SettingsMailer,
+    private settingsService: SettingsService,
   ) {}
 
   async validateUser(loginDto: LoginDto, ipAddress: string, userAgent: string) {
@@ -75,9 +77,25 @@ export class AuthService {
           data: { otpCode, otpExpiresAt },
         });
 
-        // Send actual email via Microsoft SMTP
-        await this.settingsMailer.sendEmail(
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+        const settings: any = await this.settingsService.getAllSettings().catch(() => ({}));
+        const supportEmail = settings.support_email || 'support@hartek.com';
+        const dateTimeStr = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+
+        // Send actual email via Microsoft SMTP using dynamic Email Templates
+        await this.settingsMailer.sendTemplateEmail(
           user.email,
+          'MFA_OTP',
+          {
+            user_name: user.name,
+            user_email: user.email,
+            otp_code: otpCode,
+            otp_expires_in: '5',
+            login_url: `${frontendUrl}/login`,
+            company_name: 'HARTEK Group',
+            support_email: supportEmail,
+            date_time: dateTimeStr,
+          },
           'HARTEK CMD - Multi-Factor Authentication OTP Code',
           `Hello ${user.name},\n\nYour One-Time Verification Code is: ${otpCode}\n\nThis verification code expires in 5 minutes.`
         );
@@ -271,6 +289,9 @@ export class AuthService {
 
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     const resetUrl = `${frontendUrl}/forgot-password?email=${encodeURIComponent(user.email)}&otpSent=true`;
+    const settings: any = await this.settingsService.getAllSettings().catch(() => ({}));
+    const supportEmail = settings.support_email || 'support@hartek.com';
+    const dateTimeStr = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
 
     const emailBody = `Hello ${user.name},\n\n` +
       `Your One-Time Password Reset Code is: ${otpCode}\n\n` +
@@ -300,6 +321,8 @@ export class AuthService {
         reset_link: resetUrl,
         login_url: `${frontendUrl}/login`,
         company_name: 'HARTEK Group',
+        support_email: supportEmail,
+        date_time: dateTimeStr,
       },
       'HARTEK CMD - Account Password Reset OTP',
       emailBody,
@@ -345,6 +368,31 @@ export class AuthService {
       where: { userId: user.id },
     });
 
+    // Send confirmation email
+    try {
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      const settings: any = await this.settingsService.getAllSettings().catch(() => ({}));
+      const supportEmail = settings.support_email || 'support@hartek.com';
+      const dateTimeStr = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+
+      await this.settingsMailer.sendTemplateEmail(
+        user.email,
+        'PASSWORD_CHANGED',
+        {
+          user_name: user.name,
+          user_email: user.email,
+          company_name: 'HARTEK Group',
+          support_email: supportEmail,
+          date_time: dateTimeStr,
+          login_url: `${frontendUrl}/login`,
+        },
+        'Security Alert: Your HARTEK CMD Password Has Been Updated',
+        `Hello ${user.name},\n\nThis is a security notification to confirm that your HARTEK CMD account password was changed successfully on ${dateTimeStr}.`,
+      );
+    } catch (err) {
+      console.error('[PASSWORD CHANGED EMAIL ERROR]', err);
+    }
+
     return {
       message: 'Password has been reset successfully. Please log in with your new password.',
     };
@@ -354,7 +402,7 @@ export class AuthService {
     const saltRounds = 10;
     const passwordHash = await bcrypt.hash(newPassword, saltRounds);
 
-    await this.prisma.user.update({
+    const user = await this.prisma.user.update({
       where: { id: userId },
       data: {
         passwordHash,
@@ -363,6 +411,31 @@ export class AuthService {
         lockedUntil: null,
       },
     });
+
+    // Send confirmation email
+    try {
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      const settings: any = await this.settingsService.getAllSettings().catch(() => ({}));
+      const supportEmail = settings.support_email || 'support@hartek.com';
+      const dateTimeStr = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+
+      await this.settingsMailer.sendTemplateEmail(
+        user.email,
+        'PASSWORD_CHANGED',
+        {
+          user_name: user.name,
+          user_email: user.email,
+          company_name: 'HARTEK Group',
+          support_email: supportEmail,
+          date_time: dateTimeStr,
+          login_url: `${frontendUrl}/login`,
+        },
+        'Security Alert: Your HARTEK CMD Password Has Been Updated',
+        `Hello ${user.name},\n\nThis is a security notification to confirm that your HARTEK CMD account password was changed successfully on ${dateTimeStr}.`,
+      );
+    } catch (err) {
+      console.error('[PASSWORD CHANGED EMAIL ERROR]', err);
+    }
 
     return {
       message: 'Password changed successfully.',
