@@ -1380,7 +1380,7 @@ input,select,textarea,button{font-size:16px}
     justify-content: center !important;
     align-items: center !important;
     padding: 24px !important;
-    background: var(--login-mobile-bg, linear-gradient(135deg, #0F2A4A 0%, #1e3a60 100%)) !important;
+    background: #8b1c1c !important;
     background-image: none !important;
   }
   .user-select-modal.login-modal-responsive {

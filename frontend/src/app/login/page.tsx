@@ -46,13 +46,48 @@ export default function LoginPage() {
     accent_color: '#EF9F27',
   });
 
+  const updateBrowserFavicon = (faviconUrl: string) => {
+    if (!faviconUrl) return;
+    try {
+      const existingLinks = document.querySelectorAll("link[rel*='icon']");
+      existingLinks.forEach(el => el.remove());
+
+      const cacheBustedUrl = faviconUrl.startsWith('data:') 
+        ? faviconUrl 
+        : `${faviconUrl}${faviconUrl.includes('?') ? '&' : '?'}v=${Date.now()}`;
+
+      const linkIcon = document.createElement('link');
+      linkIcon.rel = 'icon';
+      linkIcon.type = faviconUrl.startsWith('data:image/svg') 
+        ? 'image/svg+xml' 
+        : faviconUrl.startsWith('data:image/png') 
+          ? 'image/png' 
+          : 'image/x-icon';
+      linkIcon.href = cacheBustedUrl;
+      document.head.appendChild(linkIcon);
+
+      const linkShortcut = document.createElement('link');
+      linkShortcut.rel = 'shortcut icon';
+      linkShortcut.href = cacheBustedUrl;
+      document.head.appendChild(linkShortcut);
+
+      const linkApple = document.createElement('link');
+      linkApple.rel = 'apple-touch-icon';
+      linkApple.href = cacheBustedUrl;
+      document.head.appendChild(linkApple);
+    } catch (e) {}
+  };
+
   useEffect(() => {
     fetch(`${getApiBaseUrl()}/settings/public`)
       .then(res => res.json())
       .then(res => {
         if (res) {
           setBranding(res);
-          document.title = res.app_name || 'HARTEK CMD Office';
+          document.title = res.browser_tab_title || res.app_name || 'HARTEK CMD Office';
+          if (res.favicon_url) {
+            updateBrowserFavicon(res.favicon_url);
+          }
           if (res.primary_color) {
             document.documentElement.style.setProperty('--navy', res.primary_color);
             const alt = getLighterOrDarker(res.primary_color, 0.35);
