@@ -113,6 +113,8 @@ export default function AdminConsolePage() {
     app_logo: '🏢',
     app_name: 'HARTEK CMD Office',
     app_subtitle: 'Operations Command Center v3',
+    browser_tab_title: 'HARTEK CMD Executive Dashboard',
+    favicon_url: '',
     primary_color: '#0f2a4a',
     accent_color: '#ef9f27',
     admin_logo: '🛡️',
@@ -315,6 +317,18 @@ export default function AdminConsolePage() {
       }
       if (branding.accent_color) {
         document.documentElement.style.setProperty('--accent', branding.accent_color);
+      }
+      if (branding.browser_tab_title) {
+        document.title = branding.browser_tab_title;
+      }
+      if (branding.favicon_url) {
+        let link = document.querySelector("link[rel*='icon']") as HTMLLinkElement;
+        if (!link) {
+          link = document.createElement('link');
+          link.rel = 'shortcut icon';
+          document.getElementsByTagName('head')[0].appendChild(link);
+        }
+        link.href = branding.favicon_url;
       }
     }
   }, [branding]);
@@ -1258,6 +1272,43 @@ export default function AdminConsolePage() {
                           Apply Branding and custom Theme Colors to Admin Control Panel
                         </label>
                       </div>
+
+                      {/* Browser Tab & Favicon Configuration */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', marginTop: '16px', borderTop: isDark ? '1px solid #334155' : '1px solid #f1f5f9', paddingTop: '16px' }}>
+                        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: isDark ? '#3b82f6' : 'var(--navy)' }}>Browser Tab & Favicon Configuration</h3>
+                        
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>Browser Tab Title (Name shown on browser tab)</label>
+                          <input 
+                            type="text" 
+                            value={branding.browser_tab_title || ''} 
+                            onChange={e => setBranding({...branding, browser_tab_title: e.target.value})} 
+                            placeholder="e.g. HARTEK CMD Executive Dashboard"
+                            style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} 
+                          />
+                        </div>
+                        
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>Browser Tab Favicon (Image URL or Path)</label>
+                          <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                            <input 
+                              type="text" 
+                              value={branding.favicon_url || ''} 
+                              onChange={e => setBranding({...branding, favicon_url: e.target.value})} 
+                              placeholder="e.g. https://example.com/favicon.ico or /favicon.ico"
+                              style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', flex: 1, background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} 
+                            />
+                            {branding.favicon_url && (
+                              <img 
+                                src={branding.favicon_url} 
+                                alt="Favicon Preview" 
+                                style={{ width: '28px', height: '28px', objectFit: 'contain', borderRadius: '4px', border: '1px solid #cbd5e1' }}
+                                onError={(e) => (e.currentTarget.style.display = 'none')}
+                              />
+                            )}
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   ) : subBrandingTab === 'login' ? (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -1746,7 +1797,7 @@ export default function AdminConsolePage() {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '16px', marginBottom: '28px' }}>
                 {roles.filter((r: any) => !['Supervisor', 'Viewer'].includes(r.name)).map(r => {
                   const isSelected = selectedRole?.id === r.id;
-                  const isSystemRole = ['Admin', 'Manager', 'Supervisor', 'Employee', 'Viewer', 'Guest'].includes(r.name);
+                  const isSystemRole = ['Admin', 'CMD', 'Manager', 'Employee', 'Guest'].includes(r.name);
                   const userCount = users.filter((u: any) => u.roleId === r.id).length;
 
                   return (

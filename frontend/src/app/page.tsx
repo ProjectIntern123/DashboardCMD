@@ -415,7 +415,16 @@ export default function DashboardPage() {
       .then(res => {
         if (res) {
           setBranding(res);
-          document.title = res.app_name || 'HARTEK CMD Office';
+          document.title = res.browser_tab_title || res.app_name || 'HARTEK CMD Office';
+          if (res.favicon_url) {
+            let link = document.querySelector("link[rel*='icon']") as HTMLLinkElement;
+            if (!link) {
+              link = document.createElement('link');
+              link.rel = 'shortcut icon';
+              document.getElementsByTagName('head')[0].appendChild(link);
+            }
+            link.href = res.favicon_url;
+          }
           if (res.primary_color) {
             document.documentElement.style.setProperty('--navy', res.primary_color);
           }
@@ -1523,17 +1532,23 @@ export default function DashboardPage() {
 
 
   // Task filtering & security checks
-  const isCMD = user?.role === 'CMD';
-  const isAdmin = user?.role === 'Admin';
+  const isCMD = user?.role === 'CMD' || (user?.role as any)?.name === 'CMD';
+  const isAdmin = user?.role === 'Admin' || (user?.role as any)?.name === 'Admin';
   const hasTaskInbox = true;
 
   const getEligibleAssignees = () => {
     if (!user) return [];
-    const isExecutiveOrAdmin = user.role === 'Admin' || user.role === 'CMD';
-    if (isExecutiveOrAdmin) {
-      return usersList.filter((u: any) => u.id !== user.id && u.active !== false);
+    if (isCMD) {
+      return usersList.filter((u: any) => 
+        u.id !== user.id && 
+        u.active !== false && 
+        !u.immuneFromEscalation &&
+        (u.role?.name === 'Manager' || u.role?.name === 'Employee' || u.role === 'Manager' || u.role === 'Employee')
+      );
+    } else if (isAdmin) {
+      return usersList.filter((u: any) => u.id !== user.id && u.active !== false && !u.immuneFromEscalation);
     } else {
-      return usersList.filter((u: any) => u.managerId === user.id && u.active !== false);
+      return usersList.filter((u: any) => u.managerId === user.id && u.active !== false && !u.immuneFromEscalation);
     }
   };
 
