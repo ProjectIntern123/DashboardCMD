@@ -36,6 +36,7 @@ export class UserService {
         updatedAt: true,
         roleId: true,
         managerId: true,
+        immuneFromEscalation: true,
         role: {
           select: {
             id: true,
@@ -80,6 +81,7 @@ export class UserService {
         managerId: dto.managerId || null,
         active: dto.active !== undefined ? dto.active : true,
         requiresPasswordReset: isTempPassword,
+        immuneFromEscalation: dto.immuneFromEscalation !== undefined ? Boolean(dto.immuneFromEscalation) : false,
       },
       include: {
         role: true,
@@ -182,6 +184,9 @@ export class UserService {
     }
     if (dto.active !== undefined) {
       updateData.active = dto.active;
+    }
+    if (dto.immuneFromEscalation !== undefined) {
+      updateData.immuneFromEscalation = Boolean(dto.immuneFromEscalation);
     }
     if (dto.password) {
       updateData.passwordHash = await bcrypt.hash(dto.password, 10);

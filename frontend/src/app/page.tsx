@@ -296,6 +296,8 @@ export default function DashboardPage() {
     totalBilled: 0.0
   });
   const [showProfileDropdown, setShowProfileDropdown] = useState(false);
+  const [escInputText, setEscInputText] = useState('');
+  const [escShowDropdown, setEscShowDropdown] = useState(false);
   const [branding, setBranding] = useState<any>({
     app_logo: '🏢',
     app_name: 'HARTEK CMD Office',
@@ -743,6 +745,8 @@ export default function DashboardPage() {
     setOpenModalId(modalId);
     setFormData({ ...prefill });
     setFileAttachments([]);
+    setEscInputText('');
+    setEscShowDropdown(false);
   };
 
   const openEditModal = (modalId: string, record: any) => {
@@ -807,8 +811,8 @@ export default function DashboardPage() {
       showToast('Please select at least one assignee', 'err');
       return;
     }
-    if (endpoint === '/escalations' && (!formData.assignedTo || formData.assignedTo.length === 0)) {
-      showToast('Please select at least one assignee', 'err');
+    if (endpoint === '/escalations' && (!formData.assignedTo || formData.assignedTo.length === 0) && !formData.esc) {
+      showToast('Please select or enter at least one user to escalate to', 'err');
       return;
     }
 
@@ -5355,32 +5359,221 @@ export default function DashboardPage() {
                       <option value="Closed">Closed</option>
                     </select>
                   </div>
-                  <div className="fg">
-                    <label>Assign To <span style={{ color: 'red' }}>*</span></label>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '8px', maxHeight: '180px', overflowY: 'auto', border: '1px solid #cbd5e1', borderRadius: '6px', padding: '12px', background: '#f8fafc' }}>
-                      {getEligibleAssignees().length === 0 ? (
-                        <div style={{ fontSize: '13px', color: '#64748b', fontStyle: 'italic' }}>
-                          No eligible employees report to you.
-                        </div>
-                      ) : (
-                        getEligibleAssignees().map((u: any) => (
-                          <label key={u.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', cursor: 'pointer' }}>
-                            <input
-                              type="checkbox"
-                              checked={formData.assignedTo?.includes(u.id) || false}
-                              onChange={e => {
-                                const ids = formData.assignedTo || [];
-                                const nextIds = e.target.checked
-                                  ? [...ids, u.id]
-                                  : ids.filter((id: string) => id !== u.id);
-                                handleFormInputChange('assignedTo', nextIds);
+                  <div className="fg" style={{ position: 'relative' }}>
+                    <label style={{ fontWeight: 600, fontSize: '13px' }}>Escalate To</label>
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        alignItems: 'center',
+                        gap: '6px',
+                        padding: '8px 12px',
+                        border: '1px solid #cbd5e1',
+                        borderRadius: '8px',
+                        background: '#fff',
+                        minHeight: '44px',
+                        boxShadow: escShowDropdown ? '0 0 0 2px rgba(30, 64, 175, 0.2)' : 'none',
+                        transition: 'all 0.2s',
+                        cursor: 'text'
+                      }}
+                      onClick={() => setEscShowDropdown(true)}
+                    >
+                      {(formData.assignedTo || []).map((userId: string) => {
+                        const u = usersList.find((usr: any) => usr.id === userId);
+                        const label = u ? `${u.name} (${u.email})` : userId;
+                        return (
+                          <div
+                            key={userId}
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              background: '#e0e7ff',
+                              color: '#1e1b4b',
+                              padding: '4px 10px',
+                              borderRadius: '16px',
+                              fontSize: '12px',
+                              fontWeight: 600,
+                              border: '1px solid #c7d2fe'
+                            }}
+                          >
+                            <span>👤 {label}</span>
+                            <span
+                              style={{
+                                cursor: 'pointer',
+                                color: '#4338ca',
+                                fontWeight: 'bold',
+                                marginLeft: '2px',
+                                fontSize: '13px'
                               }}
-                            />
-                            {u.name} ({u.email})
-                          </label>
-                        ))
-                      )}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const nextIds = (formData.assignedTo || []).filter((id: string) => id !== userId);
+                                const nextEscNames = nextIds.map((id: string) => {
+                                  const usr = usersList.find((item: any) => item.id === id);
+                                  return usr ? usr.name : id;
+                                }).join(', ');
+                                handleFormInputChange('assignedTo', nextIds);
+                                handleFormInputChange('esc', nextEscNames);
+                              }}
+                            >
+                              ✕
+                            </span>
+                          </div>
+                        );
+                      })}
+
+                      <input
+                        type="text"
+                        placeholder={(formData.assignedTo || []).length === 0 ? "Type user name or email to escalate..." : "Add more recipients..."}
+                        value={escInputText}
+                        onFocus={() => setEscShowDropdown(true)}
+                        onChange={(e) => {
+                          setEscInputText(e.target.value);
+                          setEscShowDropdown(true);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ',') {
+                            e.preventDefault();
+                            const query = escInputText.trim();
+                            if (!query) return;
+
+                            const matchedUser = usersList.find((u: any) =>
+                              u.active !== false &&
+                              !u.immuneFromEscalation &&
+                              (u.email.toLowerCase() === query.toLowerCase() || u.name.toLowerCase() === query.toLowerCase() || u.email.toLowerCase().includes(query.toLowerCase()) || u.name.toLowerCase().includes(query.toLowerCase()))
+                            );
+
+                            if (matchedUser && !(formData.assignedTo || []).includes(matchedUser.id)) {
+                              const nextIds = [...(formData.assignedTo || []), matchedUser.id];
+                              const nextEscNames = nextIds.map((id: string) => {
+                                const usr = usersList.find((item: any) => item.id === id);
+                                return usr ? usr.name : id;
+                              }).join(', ');
+                              handleFormInputChange('assignedTo', nextIds);
+                              handleFormInputChange('esc', nextEscNames);
+                              setEscInputText('');
+                            } else if (query.includes('@')) {
+                              const nextIds = [...(formData.assignedTo || []), query];
+                              handleFormInputChange('assignedTo', nextIds);
+                              handleFormInputChange('esc', nextIds.join(', '));
+                              setEscInputText('');
+                            }
+                          }
+                        }}
+                        style={{
+                          border: 'none',
+                          outline: 'none',
+                          flex: 1,
+                          minWidth: '160px',
+                          fontSize: '13px',
+                          background: 'transparent',
+                          padding: '2px 0'
+                        }}
+                      />
                     </div>
+
+                    {escShowDropdown && (
+                      <>
+                        <div
+                          style={{ position: 'fixed', inset: 0, zIndex: 999 }}
+                          onClick={() => setEscShowDropdown(false)}
+                        />
+                        <div
+                          style={{
+                            position: 'absolute',
+                            top: '100%',
+                            left: 0,
+                            right: 0,
+                            marginTop: '4px',
+                            background: '#fff',
+                            border: '1px solid #cbd5e1',
+                            borderRadius: '8px',
+                            boxShadow: '0 10px 25px rgba(0,0,0,0.15)',
+                            maxHeight: '220px',
+                            overflowY: 'auto',
+                            zIndex: 1000,
+                            padding: '4px 0'
+                          }}
+                        >
+                          {usersList
+                            .filter((u: any) =>
+                              u.active !== false &&
+                              !u.immuneFromEscalation &&
+                              !(formData.assignedTo || []).includes(u.id) &&
+                              (!escInputText ||
+                                u.name.toLowerCase().includes(escInputText.toLowerCase()) ||
+                                u.email.toLowerCase().includes(escInputText.toLowerCase()))
+                            )
+                            .map((u: any) => (
+                              <div
+                                key={u.id}
+                                onClick={() => {
+                                  const nextIds = [...(formData.assignedTo || []), u.id];
+                                  const nextEscNames = nextIds.map((id: string) => {
+                                    const usr = usersList.find((item: any) => item.id === id);
+                                    return usr ? usr.name : id;
+                                  }).join(', ');
+                                  handleFormInputChange('assignedTo', nextIds);
+                                  handleFormInputChange('esc', nextEscNames);
+                                  setEscInputText('');
+                                  setEscShowDropdown(false);
+                                }}
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '10px',
+                                  padding: '10px 14px',
+                                  cursor: 'pointer',
+                                  transition: 'background 0.15s',
+                                  borderBottom: '1px solid #f1f5f9'
+                                }}
+                                onMouseEnter={(e) => (e.currentTarget.style.background = '#f8fafc')}
+                                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                              >
+                                <div
+                                  style={{
+                                    width: '32px',
+                                    height: '32px',
+                                    borderRadius: '50%',
+                                    background: 'var(--navy)',
+                                    color: '#fff',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    fontSize: '12px',
+                                    fontWeight: 700,
+                                    flexShrink: 0
+                                  }}
+                                >
+                                  {u.initials || u.name?.substring(0, 2).toUpperCase() || 'US'}
+                                </div>
+                                <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                                  <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--navy)' }}>
+                                    {u.name}
+                                  </span>
+                                  <span style={{ fontSize: '11px', color: '#64748b' }}>
+                                    {u.email} {u.role ? `· ${u.role?.name || u.role}` : ''}
+                                  </span>
+                                </div>
+                              </div>
+                            ))}
+
+                          {usersList.filter((u: any) =>
+                            u.active !== false &&
+                            !u.immuneFromEscalation &&
+                            !(formData.assignedTo || []).includes(u.id) &&
+                            (!escInputText ||
+                              u.name.toLowerCase().includes(escInputText.toLowerCase()) ||
+                              u.email.toLowerCase().includes(escInputText.toLowerCase()))
+                          ).length === 0 && (
+                            <div style={{ padding: '12px 14px', fontSize: '12px', color: '#64748b', fontStyle: 'italic', textAlign: 'center' }}>
+                              {escInputText ? `Press Enter to add "${escInputText}"` : 'No matching users found'}
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
                   </div>
                   <div className="fg">
                     <label>Resolution / Action Taken</label>

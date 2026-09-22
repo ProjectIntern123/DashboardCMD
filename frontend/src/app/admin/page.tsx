@@ -162,6 +162,7 @@ export default function AdminConsolePage() {
     roleId: '',
     managerId: '',
     active: true,
+    immuneFromEscalation: false,
   });
 
   // Role Management state
@@ -355,13 +356,32 @@ export default function AdminConsolePage() {
   };
 
   const handleUserDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to disable/soft-delete this user?')) return;
+    if (!confirm('Are you sure you want to permanently delete this user account from the system?')) return;
     try {
       await api.delete(`/users/${id}`);
-      showToast('User roster record disabled');
+      showToast('User account deleted permanently');
+      setShowUserModal(false);
       loadAdminData();
-    } catch (e) {
-      showToast('Error deleting user profile', 'err');
+    } catch (e: any) {
+      showToast(e.message || 'Error deleting user profile', 'err');
+    }
+  };
+
+  const handleToggleUserActive = async (userToToggle: any) => {
+    const newActiveState = !userToToggle.active;
+    const actionText = newActiveState ? 'enable' : 'disable';
+    if (!confirm(`Are you sure you want to ${actionText} access for user ${userToToggle.name}?`)) return;
+    try {
+      await api.put(`/users/${userToToggle.id}`, {
+        ...userToToggle,
+        roleId: userToToggle.roleId || userToToggle.role?.id,
+        managerId: userToToggle.managerId || userToToggle.manager?.id,
+        active: newActiveState,
+      });
+      showToast(`User account ${newActiveState ? 'enabled' : 'disabled'} successfully`);
+      loadAdminData();
+    } catch (err: any) {
+      showToast(err.message || `Error attempting to ${actionText} user account`, 'err');
     }
   };
 
@@ -1570,7 +1590,7 @@ export default function AdminConsolePage() {
                 </div>
                 <button 
                   onClick={() => {
-                    setUserForm({ id: '', email: '', name: '', password: '', roleId: '', managerId: '', active: true });
+                    setUserForm({ id: '', email: '', name: '', password: '', roleId: '', managerId: '', active: true, immuneFromEscalation: false });
                     setShowUserModal(true);
                   }}
                   style={{ padding: '10px 16px', background: branding.primary_color || 'var(--navy)', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 700, fontSize: '13px', boxShadow: '0 4px 10px rgba(15,42,74,0.15)' }}
@@ -1649,7 +1669,8 @@ export default function AdminConsolePage() {
                                     password: '',
                                     roleId: u.roleId || u.role?.id || '',
                                     managerId: u.managerId || u.manager?.id || '',
-                                    active: u.active
+                                    active: u.active,
+                                    immuneFromEscalation: u.immuneFromEscalation || false,
                                   });
                                   setShowUserModal(true);
                                 }}
@@ -1668,19 +1689,19 @@ export default function AdminConsolePage() {
                                 <span style={{ fontSize: '14px' }}>✏️</span> Edit User
                               </button>
                               <button 
-                                onClick={disableDelete ? undefined : () => handleUserDelete(u.id)}
+                                onClick={disableDelete ? undefined : () => handleToggleUserActive(u)}
                                 disabled={disableDelete}
                                 title={
                                   isSelf 
                                     ? "You cannot disable your own logged-in account." 
                                     : isLastAdmin 
                                       ? "Cannot disable the only remaining active administrator account." 
-                                      : "Disable user profile"
+                                      : (u.active ? "Disable user access" : "Enable user access")
                                 }
                                 style={{ 
                                   background: 'none', 
                                   border: 'none', 
-                                  color: disableDelete ? (isDark ? '#4b5563' : '#cbd5e1') : '#ef4444', 
+                                  color: disableDelete ? (isDark ? '#4b5563' : '#cbd5e1') : (u.active ? '#ef4444' : '#10b981'), 
                                   cursor: disableDelete ? 'not-allowed' : 'pointer', 
                                   fontSize: '13px', 
                                   display: 'flex', 
@@ -1689,7 +1710,7 @@ export default function AdminConsolePage() {
                                   fontWeight: 600
                                 }}
                               >
-                                <span style={{ fontSize: '14px' }}>🗑️</span> Disable
+                                <span style={{ fontSize: '14px' }}>{u.active ? '🚫' : '✅'}</span> {u.active ? 'Disable' : 'Enable'}
                               </button>
                             </div>
                           </td>
@@ -1723,7 +1744,7 @@ export default function AdminConsolePage() {
 
               {/* Roles grid of cards */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '16px', marginBottom: '28px' }}>
-                {roles.map(r => {
+                {roles.filter((r: any) => !['Supervisor', 'Viewer'].includes(r.name)).map(r => {
                   const isSelected = selectedRole?.id === r.id;
                   const isSystemRole = ['Admin', 'Manager', 'Supervisor', 'Employee', 'Viewer', 'Guest'].includes(r.name);
                   const userCount = users.filter((u: any) => u.roleId === r.id).length;
@@ -2226,15 +2247,31 @@ export default function AdminConsolePage() {
                 </select>
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px' }}>
-                <input 
-                  type="checkbox" 
-                  checked={userForm.active} 
-                  onChange={e => setUserForm({...userForm, active: e.target.checked})}
-                  id="user-active-cb"
-                  style={{ cursor: 'pointer' }}
-                />
-                <label htmlFor="user-active-cb" style={{ fontSize: '13px', cursor: 'pointer', color: isDark ? '#cbd5e1' : '#334155' }}>Active Login Privilege</label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '6px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <input 
+                    type="checkbox" 
+                    checked={userForm.active} 
+                    onChange={e => setUserForm({...userForm, active: e.target.checked})}
+                    id="user-active-cb"
+                    style={{ cursor: 'pointer' }}
+                  />
+                  <label htmlFor="user-active-cb" style={{ fontSize: '13px', cursor: 'pointer', color: isDark ? '#cbd5e1' : '#334155' }}>
+                    Active Account Status (Login Allowed)
+                  </label>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <input 
+                    type="checkbox" 
+                    checked={!!userForm.immuneFromEscalation} 
+                    onChange={e => setUserForm({...userForm, immuneFromEscalation: e.target.checked})}
+                    id="user-immune-cb"
+                    style={{ cursor: 'pointer' }}
+                  />
+                  <label htmlFor="user-immune-cb" style={{ fontSize: '13px', cursor: 'pointer', color: isDark ? '#cbd5e1' : '#334155' }}>
+                    Exempt from Direct Escalation Routing (Immune)
+                  </label>
+                </div>
               </div>
               
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', marginTop: '16px', flexWrap: 'wrap' }}>

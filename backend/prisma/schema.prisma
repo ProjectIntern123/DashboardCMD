@@ -32,6 +32,7 @@ model User {
   otpExpiresAt        DateTime?
   active              Boolean        @default(true)
   requiresPasswordReset Boolean      @default(false)
+  immuneFromEscalation Boolean        @default(false)
   createdAt           DateTime       @default(now())
   updatedAt           DateTime       @updatedAt
   deletedAt           DateTime?
