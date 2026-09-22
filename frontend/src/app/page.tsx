@@ -493,6 +493,15 @@ export default function DashboardPage() {
       fetchMasterData();
       refreshAllData();
       triggerClock();
+
+      // Real-time live polling interval for CMD tasks & dashboard updates (every 15s)
+      const liveDataInterval = setInterval(() => {
+        api.get('/tasks').then(t => {
+          if (Array.isArray(t)) setTasks(t);
+        }).catch(() => {});
+      }, 15000);
+
+      return () => clearInterval(liveDataInterval);
     }
   }, [user]);
 
@@ -2266,7 +2275,7 @@ export default function DashboardPage() {
                         style={{ width: '100%' }}
                       />
                     </div>
-                    {hasPermission('Create', 'Tasks') && (
+                    {isCMD && hasPermission('Create', 'Tasks') && (
                       <button className="btn-add" onClick={() => openAddModal('task')} style={{ whiteSpace: 'nowrap' }}>
                         + Assign Task
                       </button>

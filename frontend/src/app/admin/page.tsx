@@ -302,6 +302,19 @@ export default function AdminConsolePage() {
     reader.readAsDataURL(file);
   };
 
+  const handleFaviconUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (typeof reader.result === 'string') {
+        setBranding((prev: any) => ({ ...prev, favicon_url: reader.result }));
+        showToast('Favicon image loaded successfully');
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
   useEffect(() => {
     if (selectedRole && selectedRole.permissions) {
       setTempPermissionIds(selectedRole.permissions.map((rp: any) => rp.permissionId));
@@ -1288,21 +1301,49 @@ export default function AdminConsolePage() {
                           />
                         </div>
                         
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                          <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>Browser Tab Favicon (Image URL or Path)</label>
-                          <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                          <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>
+                            Browser Tab Favicon (Enter Image URL or Upload File from System)
+                          </label>
+                          <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
                             <input 
                               type="text" 
                               value={branding.favicon_url || ''} 
                               onChange={e => setBranding({...branding, favicon_url: e.target.value})} 
-                              placeholder="e.g. https://example.com/favicon.ico or /favicon.ico"
-                              style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', flex: 1, background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} 
+                              placeholder="e.g. https://example.com/favicon.ico or data:image/png..."
+                              style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', flex: 1, minWidth: '220px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} 
+                            />
+                            <label 
+                              htmlFor="favicon-file-input" 
+                              style={{ 
+                                padding: '10px 14px', 
+                                background: isDark ? '#334155' : '#f1f5f9', 
+                                color: isDark ? '#3b82f6' : 'var(--navy)', 
+                                border: isDark ? '1px solid #4b5563' : '1px solid #cbd5e1', 
+                                borderRadius: '6px', 
+                                cursor: 'pointer', 
+                                fontWeight: 700, 
+                                fontSize: '12px', 
+                                display: 'inline-flex', 
+                                alignItems: 'center', 
+                                gap: '6px',
+                                whiteSpace: 'nowrap' 
+                              }}
+                            >
+                              📁 Upload Image File
+                            </label>
+                            <input 
+                              id="favicon-file-input" 
+                              type="file" 
+                              accept="image/*,.ico,.png,.svg,.jpg" 
+                              onChange={handleFaviconUpload} 
+                              style={{ display: 'none' }} 
                             />
                             {branding.favicon_url && (
                               <img 
                                 src={branding.favicon_url} 
                                 alt="Favicon Preview" 
-                                style={{ width: '28px', height: '28px', objectFit: 'contain', borderRadius: '4px', border: '1px solid #cbd5e1' }}
+                                style={{ width: '32px', height: '32px', objectFit: 'contain', borderRadius: '4px', border: '1px solid #cbd5e1', background: '#fff', padding: '2px' }}
                                 onError={(e) => (e.currentTarget.style.display = 'none')}
                               />
                             )}
@@ -2275,7 +2316,7 @@ export default function AdminConsolePage() {
                   style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
                 >
                   <option value="">Choose Role...</option>
-                  {roles.map(r => (
+                  {roles.filter((r: any) => !['Supervisor', 'Viewer'].includes(r.name)).map(r => (
                     <option key={r.id} value={r.id} style={{ background: isDark ? '#1e293b' : '#fff', color: isDark ? '#fff' : '#0f172a' }}>{r.name}</option>
                   ))}
                 </select>
