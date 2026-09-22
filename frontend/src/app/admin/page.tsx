@@ -250,7 +250,9 @@ export default function AdminConsolePage() {
     try {
       await api.post('/auth/logout');
     } catch (e) {}
-    router.push('/login');
+    if (typeof window !== 'undefined') {
+      window.location.href = '/login';
+    }
   };
 
   const handleBrandingSave = async (e: React.FormEvent) => {

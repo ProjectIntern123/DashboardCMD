@@ -472,6 +472,15 @@ export default function DashboardPage() {
   // -------------------------------------------------------------------------
   // INITIALIZATION AND SYNC
   // -------------------------------------------------------------------------
+  // Redirect unauthenticated user to /login
+  useEffect(() => {
+    if (!loading && !user) {
+      if (typeof window !== 'undefined') {
+        window.location.href = '/login';
+      }
+    }
+  }, [user, loading]);
+
   // Redirect Admin to /admin
   useEffect(() => {
     if (user && user.role === 'Admin') {

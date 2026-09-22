@@ -99,7 +99,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Proceed with local logout regardless of API success
     } finally {
       setUser(null);
-      router.push('/login');
+      if (typeof window !== 'undefined') {
+        window.location.href = '/login';
+      }
     }
   };
 
