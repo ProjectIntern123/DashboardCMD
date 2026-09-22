@@ -323,6 +323,38 @@ export default function AdminConsolePage() {
     }
   }, [selectedRole]);
 
+  const updateBrowserFavicon = (faviconUrl: string) => {
+    if (!faviconUrl) return;
+    try {
+      const existingLinks = document.querySelectorAll("link[rel*='icon']");
+      existingLinks.forEach(el => el.remove());
+
+      const cacheBustedUrl = faviconUrl.startsWith('data:') 
+        ? faviconUrl 
+        : `${faviconUrl}${faviconUrl.includes('?') ? '&' : '?'}v=${Date.now()}`;
+
+      const linkIcon = document.createElement('link');
+      linkIcon.rel = 'icon';
+      linkIcon.type = faviconUrl.startsWith('data:image/svg') 
+        ? 'image/svg+xml' 
+        : faviconUrl.startsWith('data:image/png') 
+          ? 'image/png' 
+          : 'image/x-icon';
+      linkIcon.href = cacheBustedUrl;
+      document.head.appendChild(linkIcon);
+
+      const linkShortcut = document.createElement('link');
+      linkShortcut.rel = 'shortcut icon';
+      linkShortcut.href = cacheBustedUrl;
+      document.head.appendChild(linkShortcut);
+
+      const linkApple = document.createElement('link');
+      linkApple.rel = 'apple-touch-icon';
+      linkApple.href = cacheBustedUrl;
+      document.head.appendChild(linkApple);
+    } catch (e) {}
+  };
+
   useEffect(() => {
     if (branding) {
       if (branding.primary_color) {
@@ -335,13 +367,7 @@ export default function AdminConsolePage() {
         document.title = branding.browser_tab_title;
       }
       if (branding.favicon_url) {
-        let link = document.querySelector("link[rel*='icon']") as HTMLLinkElement;
-        if (!link) {
-          link = document.createElement('link');
-          link.rel = 'shortcut icon';
-          document.getElementsByTagName('head')[0].appendChild(link);
-        }
-        link.href = branding.favicon_url;
+        updateBrowserFavicon(branding.favicon_url);
       }
     }
   }, [branding]);
