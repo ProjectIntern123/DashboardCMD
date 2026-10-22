@@ -1,13 +1,21 @@
 import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { SettingsService } from '../settings/settings.service';
 import { CreateNoteDto, UpdateNoteDto } from './dto/notepad.dto';
 
 @Injectable()
 export class NotepadService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private settingsService: SettingsService,
+  ) {}
 
   async create(createNoteDto: CreateNoteDto, userId: string) {
     const images = createNoteDto.images ? JSON.parse(createNoteDto.images) : [];
+
+    if (images && images.length > 0) {
+      await this.settingsService.validateAttachmentSizes(images);
+    }
 
     return this.prisma.notepadNote.create({
       data: {
@@ -48,6 +56,10 @@ export class NotepadService {
     const note = await this.findOne(id, userId); // verifies existence and owner
 
     const images = updateNoteDto.images ? JSON.parse(updateNoteDto.images) : note.images;
+
+    if (images && Array.isArray(images) && images.length > 0) {
+      await this.settingsService.validateAttachmentSizes(images);
+    }
 
     return this.prisma.notepadNote.update({
       where: { id },

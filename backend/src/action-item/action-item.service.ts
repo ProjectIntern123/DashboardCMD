@@ -1,13 +1,29 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { SettingsService } from '../settings/settings.service';
+import { RecipientValidator } from '../common/utils/recipient-validator';
 import { CreateActionItemDto, UpdateActionItemDto } from './dto/action-item.dto';
 
 @Injectable()
 export class ActionItemService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private settingsService: SettingsService,
+    private recipientValidator: RecipientValidator,
+  ) {}
 
   async create(createActionItemDto: any, userId: string) {
     const { attachments, ...data } = createActionItemDto;
+
+    if (attachments && attachments.length > 0) {
+      await this.settingsService.validateAttachmentSizes(attachments);
+    }
+
+    let validatedAssignedTo = null;
+    if (data.assignedTo) {
+      validatedAssignedTo = await this.recipientValidator.validateMixedRecipients(data.assignedTo);
+    }
+
     return this.prisma.actionItem.create({
       data: {
         meetingId: data.meetingId || null,
@@ -24,7 +40,7 @@ export class ActionItemService {
         rem: data.rem || null,
         recur: data.recur || null,
         dep: data.dep || null,
-        assignedTo: (data.assignedTo as any) || null,
+        assignedTo: (validatedAssignedTo as any) || null,
         attachments: {
           create: attachments?.map((att: any) => ({
             name: att.name,
@@ -102,8 +118,12 @@ export class ActionItemService {
   }
 
   async update(id: string, updateActionItemDto: any, userId: string, userName: string) {
-    await this.findOne(id); // Check existence
+    const existingAction = await this.findOne(id); // Check existence
     const { attachments, ...data } = updateActionItemDto;
+
+    if (data.assignedTo !== undefined) {
+      await this.recipientValidator.validateMixedRecipients(data.assignedTo);
+    }
 
     // Clean old attachments
     const existingAttIds = attachments?.map((a: any) => a.id).filter(Boolean) || [];
@@ -115,6 +135,16 @@ export class ActionItemService {
     });
 
     const newAttachments = attachments?.filter((a: any) => !a.id) || [];
+    if (newAttachments.length > 0) {
+      await this.settingsService.validateAttachmentSizes(newAttachments);
+    }
+
+    let validatedAssignedTo = existingAction.assignedTo;
+    if (data.assignedTo !== undefined) {
+      validatedAssignedTo = data.assignedTo === null
+        ? null
+        : (await this.recipientValidator.validateMixedRecipients(data.assignedTo) as any);
+    }
 
     return this.prisma.actionItem.update({
       where: { id },
@@ -133,7 +163,7 @@ export class ActionItemService {
         rem: data.rem || null,
         recur: data.recur || null,
         dep: data.dep || null,
-        assignedTo: (data.assignedTo as any) || null,
+        assignedTo: (validatedAssignedTo as any),
         attachments: {
           create: newAttachments.map((att: any) => ({
             name: att.name,

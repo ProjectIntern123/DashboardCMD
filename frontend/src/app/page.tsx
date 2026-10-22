@@ -5,7 +5,6 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '../context/AuthContext';
 import { api, getApiBaseUrl } from '../lib/api';
 import { ProjectsTab } from './components/ProjectsTab';
-import { TasksTab } from './components/TasksTab';
 
 interface PersonalNoteInnerProps {
   tabName: string;
@@ -520,6 +519,10 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (user) {
+      if (user.role === 'Admin') {
+        router.push('/admin');
+        return;
+      }
       fetchMasterData();
       refreshAllData();
       triggerClock();
@@ -825,7 +828,23 @@ export default function DashboardPage() {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
+    const maxMb = parseInt(branding?.max_attachment_size_mb || '10', 10);
+    const maxBytes = maxMb * 1024 * 1024;
+    const rawSafeCeilingBytes = 35 * 1024 * 1024; // 35 MB raw file produces ~47 MB Base64 payload, fitting 50 MB server body
+
     Array.from(files).forEach(file => {
+      if (file.size > maxBytes) {
+        const fileMb = (file.size / (1024 * 1024)).toFixed(1);
+        showToast(`"${file.name}" exceeds the configured maximum permitted attachment size of ${maxMb} MB (${fileMb} MB)`, 'err');
+        return;
+      }
+
+      if (file.size > rawSafeCeilingBytes) {
+        const fileMb = (file.size / (1024 * 1024)).toFixed(1);
+        showToast(`"${file.name}" (${fileMb} MB) exceeds the 35 MB raw ceiling for Base64 inline attachments (server 50 MB limit). Files >35 MB require infrastructure streaming configuration.`, 'err');
+        return;
+      }
+
       const reader = new FileReader();
       reader.onload = () => {
         const base64Data = reader.result as string;
@@ -1042,6 +1061,22 @@ export default function DashboardPage() {
     if (!files || files.length === 0) return;
 
     const file = files[0];
+    const maxMb = parseInt(branding?.max_attachment_size_mb || '10', 10);
+    const maxBytes = maxMb * 1024 * 1024;
+    const rawSafeCeilingBytes = 35 * 1024 * 1024; // 35 MB raw file produces ~47 MB Base64 payload, fitting 50 MB server body
+
+    if (file.size > maxBytes) {
+      const fileMb = (file.size / (1024 * 1024)).toFixed(1);
+      showToast(`"${file.name}" exceeds the configured maximum permitted attachment size of ${maxMb} MB (${fileMb} MB)`, 'err');
+      return;
+    }
+
+    if (file.size > rawSafeCeilingBytes) {
+      const fileMb = (file.size / (1024 * 1024)).toFixed(1);
+      showToast(`"${file.name}" (${fileMb} MB) exceeds the 35 MB raw ceiling for Base64 inline attachments (server 50 MB limit). Files >35 MB require infrastructure streaming configuration.`, 'err');
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = async () => {
       const base64Data = reader.result as string;
@@ -1076,6 +1111,22 @@ export default function DashboardPage() {
     if (!files || files.length === 0) return;
 
     const file = files[0];
+    const maxMb = parseInt(branding?.max_attachment_size_mb || '10', 10);
+    const maxBytes = maxMb * 1024 * 1024;
+    const infraMaxBytes = 50 * 1024 * 1024; // 50 MB Express/Nginx body limit for multipart binary uploads
+
+    if (file.size > maxBytes) {
+      const fileMb = (file.size / (1024 * 1024)).toFixed(1);
+      showToast(`"${file.name}" exceeds the configured maximum permitted file size of ${maxMb} MB (${fileMb} MB)`, 'err');
+      return;
+    }
+
+    if (file.size > infraMaxBytes) {
+      const fileMb = (file.size / (1024 * 1024)).toFixed(1);
+      showToast(`"${file.name}" (${fileMb} MB) exceeds the 50 MB server infrastructure limit (Nginx client_max_body_size).`, 'err');
+      return;
+    }
+
     showToast(`Uploading Legal MIS sheet (${mode === 'smartSync' ? 'Smart Sync' : 'Full Replace'})...`, '');
 
     const formData = new FormData();
@@ -1495,7 +1546,7 @@ export default function DashboardPage() {
     );
   }
 
-  if (!user) {
+  if (!user || user.role === 'Admin') {
     return null;
   }
 
@@ -1581,13 +1632,12 @@ export default function DashboardPage() {
       return usersList.filter((u: any) => 
         u.id !== user.id && 
         u.active !== false && 
-        !u.immuneFromEscalation &&
         (u.role?.name === 'Manager' || u.role?.name === 'Employee' || u.role === 'Manager' || u.role === 'Employee')
       );
     } else if (isAdmin) {
-      return usersList.filter((u: any) => u.id !== user.id && u.active !== false && !u.immuneFromEscalation);
+      return usersList.filter((u: any) => u.id !== user.id && u.active !== false);
     } else {
-      return usersList.filter((u: any) => u.managerId === user.id && u.active !== false && !u.immuneFromEscalation);
+      return usersList.filter((u: any) => u.managerId === user.id && u.active !== false);
     }
   };
 
@@ -5494,7 +5544,6 @@ export default function DashboardPage() {
 
                             const matchedUser = usersList.find((u: any) =>
                               u.active !== false &&
-                              !u.immuneFromEscalation &&
                               (u.email.toLowerCase() === query.toLowerCase() || u.name.toLowerCase() === query.toLowerCase() || u.email.toLowerCase().includes(query.toLowerCase()) || u.name.toLowerCase().includes(query.toLowerCase()))
                             );
 
@@ -5553,7 +5602,6 @@ export default function DashboardPage() {
                           {usersList
                             .filter((u: any) =>
                               u.active !== false &&
-                              !u.immuneFromEscalation &&
                               !(formData.assignedTo || []).includes(u.id) &&
                               (!escInputText ||
                                 u.name.toLowerCase().includes(escInputText.toLowerCase()) ||
@@ -5615,7 +5663,6 @@ export default function DashboardPage() {
 
                           {usersList.filter((u: any) =>
                             u.active !== false &&
-                            !u.immuneFromEscalation &&
                             !(formData.assignedTo || []).includes(u.id) &&
                             (!escInputText ||
                               u.name.toLowerCase().includes(escInputText.toLowerCase()) ||

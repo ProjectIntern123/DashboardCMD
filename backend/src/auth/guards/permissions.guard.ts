@@ -23,11 +23,6 @@ export class PermissionsGuard implements CanActivate {
       return false; // Not authenticated
     }
 
-    // Admin has universal access
-    if (user.role === 'Admin') {
-      return true;
-    }
-
     if (!user.permissions) {
       return false; // No permissions list loaded
     }

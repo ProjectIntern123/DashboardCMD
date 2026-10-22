@@ -1,18 +1,22 @@
 import { Controller, Get, Post, Put, Delete, Body, Param, UseGuards, ForbiddenException } from '@nestjs/common';
 import { UserService } from './user.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { PortalGuard } from '../auth/guards/portal.guard';
+import { SharedPortal, AdminPortalOnly } from '../auth/decorators/portal.decorator';
 import { GetUser } from '../auth/decorators/get-user.decorator';
 
 @Controller('users')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PortalGuard)
 export class UserController {
   constructor(private readonly userService: UserService) {}
 
+  @SharedPortal()
   @Get()
   findAll(@GetUser('role') role: string) {
     return this.userService.findAll(role);
   }
 
+  @AdminPortalOnly()
   @Get('sessions')
   findSessions(@GetUser('role') role: string) {
     if (role !== 'Admin') {
@@ -21,6 +25,7 @@ export class UserController {
     return this.userService.findSessionLogs(role);
   }
 
+  @AdminPortalOnly()
   @Get('stats')
   findStats(@GetUser('role') role: string) {
     if (role !== 'Admin') {
@@ -29,6 +34,7 @@ export class UserController {
     return this.userService.getAdminStats(role);
   }
 
+  @AdminPortalOnly()
   @Post()
   create(@Body() dto: any, @GetUser('role') role: string) {
     if (role !== 'Admin') {
@@ -37,6 +43,7 @@ export class UserController {
     return this.userService.create(dto);
   }
 
+  @AdminPortalOnly()
   @Put(':id')
   update(
     @Param('id') id: string,
@@ -51,6 +58,7 @@ export class UserController {
     return this.userService.update(id, dto, actorId, actorEmail);
   }
 
+  @AdminPortalOnly()
   @Post(':id/reset-password-temp')
   resetPasswordTemp(@Param('id') id: string, @GetUser('role') role: string) {
     if (role !== 'Admin') {
@@ -59,6 +67,7 @@ export class UserController {
     return this.userService.resetPasswordTemp(id);
   }
 
+  @AdminPortalOnly()
   @Delete(':id')
   remove(
     @Param('id') id: string,

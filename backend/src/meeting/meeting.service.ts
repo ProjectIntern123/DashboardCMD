@@ -1,20 +1,36 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { SettingsService } from '../settings/settings.service';
+import { RecipientValidator } from '../common/utils/recipient-validator';
 import { CreateMeetingDto, UpdateMeetingDto } from './dto/meeting.dto';
 
 @Injectable()
 export class MeetingService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private settingsService: SettingsService,
+    private recipientValidator: RecipientValidator,
+  ) {}
 
   async create(createMeetingDto: any, userId: string) {
     const { attachments, ...data } = createMeetingDto;
+
+    if (attachments && attachments.length > 0) {
+      await this.settingsService.validateAttachmentSizes(attachments);
+    }
+
+    let validatedAttendees = null;
+    if (data.attendees !== undefined && data.attendees !== null) {
+      validatedAttendees = await this.recipientValidator.validateAttendeesString(data.attendees);
+    }
+
     return this.prisma.meeting.create({
       data: {
         name: data.name,
         cat: data.cat,
         status: data.status,
         agenda: data.agenda || null,
-        attendees: data.attendees || null,
+        attendees: validatedAttendees || null,
         date: data.date,
         time: data.time || null,
         venue: data.venue || null,
@@ -103,21 +119,33 @@ export class MeetingService {
     });
 
     const newAttachments = attachments?.filter((a: any) => !a.id) || [];
+    if (newAttachments.length > 0) {
+      await this.settingsService.validateAttachmentSizes(newAttachments);
+    }
+
+    const updateData: any = {
+      name: data.name,
+      cat: data.cat,
+      status: data.status,
+      agenda: data.agenda !== undefined ? data.agenda || null : undefined,
+      date: data.date,
+      time: data.time !== undefined ? data.time || null : undefined,
+      venue: data.venue !== undefined ? data.venue || null : undefined,
+      recur: data.recur !== undefined ? data.recur || null : undefined,
+      notes: data.notes !== undefined ? data.notes || null : undefined,
+      notepad: data.notepad !== undefined ? data.notepad || null : undefined,
+    };
+
+    if (data.attendees !== undefined) {
+      updateData.attendees = data.attendees === null
+        ? null
+        : await this.recipientValidator.validateAttendeesString(data.attendees);
+    }
 
     return this.prisma.meeting.update({
       where: { id },
       data: {
-        name: data.name,
-        cat: data.cat,
-        status: data.status,
-        agenda: data.agenda || null,
-        attendees: data.attendees || null,
-        date: data.date,
-        time: data.time || null,
-        venue: data.venue || null,
-        recur: data.recur || null,
-        notes: data.notes || null,
-        notepad: data.notepad || null,
+        ...updateData,
         attachments: {
           create: newAttachments.map((att: any) => ({
             name: att.name,

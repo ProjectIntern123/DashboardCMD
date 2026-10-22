@@ -1,9 +1,12 @@
 import { Controller, Get, Query, UseGuards, Req, ForbiddenException } from '@nestjs/common';
 import { AuditService } from './audit.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { PortalGuard } from '../auth/guards/portal.guard';
+import { AdminPortalOnly } from '../auth/decorators/portal.decorator';
 
 @Controller('audit-logs')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PortalGuard)
+@AdminPortalOnly()
 export class AuditController {
   constructor(private readonly auditService: AuditService) {}
 

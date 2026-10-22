@@ -1,7 +1,9 @@
-import { Controller, Get, Put, Post, Body, UseGuards, ForbiddenException } from '@nestjs/common';
+import { Controller, Get, Put, Post, Body, UseGuards, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { SettingsService } from './settings.service';
 import { SettingsMailer } from './settings.mailer';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { PortalGuard } from '../auth/guards/portal.guard';
+import { AdminPortalOnly } from '../auth/decorators/portal.decorator';
 import { GetUser } from '../auth/decorators/get-user.decorator';
 
 @Controller('settings')
@@ -16,8 +18,45 @@ export class SettingsController {
     return this.settingsService.getPublicSettings();
   }
 
+  @Get('attachment-limit')
+  async getAttachmentLimit() {
+    const maxAttachmentSizeMb = await this.settingsService.getMaxAttachmentSizeMb();
+    return {
+      maxAttachmentSizeMb,
+      minMb: 1,
+      maxMb: 9999,
+      defaultMb: 10,
+      infrastructureLimitMb: SettingsService.INFRASTRUCTURE_PAYLOAD_LIMIT_MB,
+      maxSafeInlineMb: SettingsService.MAX_SAFE_INLINE_BASE64_MB,
+      isInfrastructureExceeded: maxAttachmentSizeMb > SettingsService.MAX_SAFE_INLINE_BASE64_MB,
+    };
+  }
+
+  @UseGuards(JwtAuthGuard, PortalGuard)
+  @AdminPortalOnly()
+  @Put('attachment-limit')
+  async updateAttachmentLimit(
+    @Body() body: { maxAttachmentSizeMb: number | string },
+    @GetUser('role') role: string,
+  ) {
+    if (role !== 'Admin') {
+      throw new ForbiddenException('Only administrators can update attachment size limits');
+    }
+    const raw = body?.maxAttachmentSizeMb;
+    const strVal = String(raw ?? '').trim();
+    if (!strVal || !/^\d+$/.test(strVal)) {
+      throw new BadRequestException('Maximum attachment size must be an integer between 1 MB and 9999 MB.');
+    }
+    const parsed = parseInt(strVal, 10);
+    if (parsed < 1 || parsed > 9999) {
+      throw new BadRequestException('Maximum attachment size must be between 1 MB and 9999 MB.');
+    }
+    return this.settingsService.updateAttachmentSizeLimit(parsed);
+  }
+
+  @UseGuards(JwtAuthGuard, PortalGuard)
+  @AdminPortalOnly()
   @Get()
-  @UseGuards(JwtAuthGuard)
   getAll(@GetUser('role') role: string) {
     if (role !== 'Admin') {
       throw new ForbiddenException('Only administrators can access configuration settings');
@@ -25,8 +64,9 @@ export class SettingsController {
     return this.settingsService.getAllSettings();
   }
 
+  @UseGuards(JwtAuthGuard, PortalGuard)
+  @AdminPortalOnly()
   @Put()
-  @UseGuards(JwtAuthGuard)
   update(@Body() updates: Record<string, string>, @GetUser('role') role: string) {
     if (role !== 'Admin') {
       throw new ForbiddenException('Only administrators can save configuration updates');
@@ -34,8 +74,9 @@ export class SettingsController {
     return this.settingsService.updateSettings(updates);
   }
 
+  @UseGuards(JwtAuthGuard, PortalGuard)
+  @AdminPortalOnly()
   @Post('smtp/test')
-  @UseGuards(JwtAuthGuard)
   async testSmtpConnection(@Body() overrides: Record<string, string>, @GetUser('role') role: string) {
     if (role !== 'Admin') {
       throw new ForbiddenException('Only administrators can trigger SMTP tests');
@@ -43,8 +84,9 @@ export class SettingsController {
     return this.settingsMailer.testConnection(overrides);
   }
 
+  @UseGuards(JwtAuthGuard, PortalGuard)
+  @AdminPortalOnly()
   @Post('smtp/test-email')
-  @UseGuards(JwtAuthGuard)
   async sendTestEmail(@Body() body: { to: string } & Record<string, string>, @GetUser('role') role: string) {
     if (role !== 'Admin') {
       throw new ForbiddenException('Only administrators can send SMTP test emails');

@@ -1,16 +1,23 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards, UseInterceptors, UploadedFile, HttpStatus, HttpCode } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards, UseInterceptors, UploadedFile, HttpStatus, HttpCode, BadRequestException } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { LegalService } from './legal.service';
+import { SettingsService } from '../settings/settings.service';
 import { CreateLegalCaseDto, UpdateLegalCaseDto } from './dto/legal.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { PortalGuard } from '../auth/guards/portal.guard';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { UserPortalOnly } from '../auth/decorators/portal.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { GetUser } from '../auth/decorators/get-user.decorator';
 
 @Controller('legal-cases')
-@UseGuards(JwtAuthGuard, PermissionsGuard)
+@UseGuards(JwtAuthGuard, PortalGuard, PermissionsGuard)
+@UserPortalOnly()
 export class LegalController {
-  constructor(private readonly legalService: LegalService) {}
+  constructor(
+    private readonly legalService: LegalService,
+    private readonly settingsService: SettingsService,
+  ) {}
 
   @Post()
   @RequirePermissions('Create:Legal')
@@ -41,6 +48,13 @@ export class LegalController {
     @GetUser('id') userId: string,
     @GetUser('name') userName: string,
   ) {
+    if (!file) {
+      throw new BadRequestException('No CSV file uploaded');
+    }
+    await this.settingsService.validateFileSize(
+      file.size || file.buffer?.length || 0,
+      file.originalname || 'MIS File',
+    );
     const csvContent = file.buffer.toString('utf-8');
     return this.legalService.importCsv(csvContent, mode, userId, userName);
   }

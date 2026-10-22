@@ -1,10 +1,14 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { SettingsService } from '../settings/settings.service';
 import { CreateProjectDto, UpdateProjectDto } from './dto/project.dto';
 
 @Injectable()
 export class ProjectService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private settingsService: SettingsService,
+  ) {}
 
   async findAllDepartments() {
     return this.prisma.department.findMany({
@@ -15,6 +19,11 @@ export class ProjectService {
 
   async create(createProjectDto: any, userId: string) {
     const { attachments, ...data } = createProjectDto;
+
+    if (attachments && attachments.length > 0) {
+      await this.settingsService.validateAttachmentSizes(attachments);
+    }
+
     return this.prisma.project.create({
       data: {
         name: data.name,
@@ -138,6 +147,9 @@ export class ProjectService {
     });
 
     const newAttachments = attachments?.filter((a: any) => !a.id) || [];
+    if (newAttachments.length > 0) {
+      await this.settingsService.validateAttachmentSizes(newAttachments);
+    }
 
     return this.prisma.project.update({
       where: { id },

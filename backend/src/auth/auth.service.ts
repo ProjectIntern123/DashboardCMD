@@ -176,8 +176,10 @@ export class AuthService {
 
     // Save refreshToken session in DB
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
-    await this.prisma.session.create({
-      data: {
+    await this.prisma.session.upsert({
+      where: { token: refreshToken },
+      update: { expiresAt },
+      create: {
         userId: payload.sub,
         token: refreshToken,
         expiresAt,

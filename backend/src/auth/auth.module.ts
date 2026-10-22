@@ -7,6 +7,9 @@ import { JwtStrategy } from './strategies/jwt.strategy';
 
 import { SettingsModule } from '../settings/settings.module';
 
+import { PortalGuard } from './guards/portal.guard';
+import { PermissionsGuard } from './guards/permissions.guard';
+
 const jwtSecret = process.env.JWT_SECRET;
 if (!jwtSecret && process.env.NODE_ENV === 'production') {
   throw new Error('JWT_SECRET environment variable is missing in production!');
@@ -24,7 +27,7 @@ if (!jwtSecret && process.env.NODE_ENV === 'production') {
     SettingsModule,
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy],
-  exports: [AuthService, PassportModule],
+  providers: [AuthService, JwtStrategy, PortalGuard, PermissionsGuard],
+  exports: [AuthService, PassportModule, PortalGuard, PermissionsGuard],
 })
 export class AuthModule {}
