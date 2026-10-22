@@ -6,6 +6,22 @@ const prisma = new PrismaClient();
 async function main() {
   console.log('Seeding database...');
 
+  // Fail-closed guard: halt if database already contains users, system settings, roles, or permissions
+  // Database inspection errors are NOT suppressed: if the database is unreachable or query fails, it throws and halts
+  const userCount = await prisma.user.count();
+  const settingCount = await prisma.systemSetting.count();
+  const roleCount = await prisma.role.count();
+  const permissionCount = await prisma.permission.count();
+
+  if (userCount > 0 || settingCount > 0 || roleCount > 0 || permissionCount > 0) {
+    console.log('=========================================================================');
+    console.log(`[SEED SAFETY] Existing data detected (${userCount} users, ${settingCount} settings, ${roleCount} roles, ${permissionCount} permissions).`);
+    console.log('[SEED REFUSED] Master seeding aborted to protect existing data.');
+    console.log('Roles, permissions, settings, and user data are preserved.');
+    console.log('=========================================================================');
+    return;
+  }
+
   // -------------------------------------------------------------------------
   // 1. SYSTEM SETTINGS & FEATURE FLAGS
   // -------------------------------------------------------------------------
@@ -182,9 +198,7 @@ async function main() {
   for (const u of usersList) {
     createdUsers[u.initials] = await prisma.user.upsert({
       where: { email: u.email },
-      update: {
-        roleId: u.roleId,
-      },
+      update: {}, // Never overwrite existing roles, active status, or attributes
       create: {
         email: u.email,
         name: u.name,

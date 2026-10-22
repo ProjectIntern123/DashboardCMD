@@ -42,30 +42,55 @@ if %ERRORLEVEL% NEQ 0 (
 echo [SUCCESS] Dependencies verified and ready.
 echo.
 
-:: Step 4: Database Schema Verification & Push
-echo [STEP 4/6] Checking Database Connection & Synchronizing Schema...
-cd backend
-echo [INFO] Running Prisma Database Schema Push...
-call npx prisma db push --accept-data-loss
-if %ERRORLEVEL% NEQ 0 (
-    echo [ERROR] Database schema push failed.
-    echo Please ensure PostgreSQL service is running and DATABASE_URL in .env is correct.
-    cd ..
+:: Step 4: Database Safety Check & Safe Initialization
+echo [STEP 4/6] Checking Database State & Protecting Existing Records...
+pushd backend
+call npx prisma generate
+if !ERRORLEVEL! NEQ 0 (
+    echo [ERROR] Prisma client generation failed.
+    popd
     goto ERROR
 )
-cd ..
-echo [SUCCESS] Database connection established and schema synchronized safely.
-echo.
+popd
 
-:: Step 5: Database Seed & Master Data Verification
-echo [STEP 5/6] Checking & Seeding Default Admin & Lookup Data...
-cd backend
-call npx prisma db seed
-if %ERRORLEVEL% NEQ 0 (
-    echo [WARNING] Database seed encountered a notice, continuing...
+node scripts/check-db-init.js
+set DB_STATE=%ERRORLEVEL%
+
+if "%DB_STATE%"=="10" (
+    echo -------------------------------------------------------------------------
+    echo [SAFETY NOTICE] Active database with existing objects detected!
+    echo [SAFETY NOTICE] Skipping 'db push' and 'db seed' to protect existing data.
+    echo [INFO] For ongoing production updates, use deploy-production.sh
+    echo -------------------------------------------------------------------------
+    goto STEP_BUILD
 )
-cd ..
-echo [SUCCESS] Database master data verified.
+if "%DB_STATE%"=="0" (
+    echo [INFO] Clean empty database detected. Performing initial schema creation...
+    pushd backend
+    call npx prisma db push
+    if !ERRORLEVEL! NEQ 0 (
+        echo [ERROR] Initial schema push failed.
+        popd
+        goto ERROR
+    )
+    echo [SUCCESS] Initial schema created safely without data loss.
+    echo.
+    echo [STEP 5/6] Seeding Initial Master Lookup Data for First-Time Setup...
+    call npx prisma db seed
+    if !ERRORLEVEL! NEQ 0 (
+        echo [ERROR] Initial seeding failed.
+        popd
+        goto ERROR
+    )
+    popd
+    echo [SUCCESS] Master lookup data verified.
+    goto STEP_BUILD
+)
+
+echo [ERROR] Database verification failed (exit code %DB_STATE%). Halting setup to prevent data loss.
+goto ERROR
+
+:STEP_BUILD
 echo.
 
 :: Step 6: Smart Application Build Compilation

@@ -7,14 +7,6 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
 
   async onModuleInit() {
     await this.$connect();
-    try {
-      await this.$executeRawUnsafe(
-        'ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "immuneFromEscalation" BOOLEAN DEFAULT false;'
-      );
-      this.logger.log('Database schema column check completed ("immuneFromEscalation").');
-    } catch (e: any) {
-      this.logger.warn(`Database column auto-sync notice: ${e.message || e}`);
-    }
   }
 
   async onModuleDestroy() {

@@ -43,21 +43,33 @@ node scripts/bootstrap.js
 echo "[SUCCESS] Dependencies verified and ready."
 echo ""
 
-# Step 4: Database Schema Migration
-echo "[STEP 4/6] Checking Database Connection & Synchronizing Schema..."
-cd backend
-echo "[INFO] Running Prisma Database Schema Push..."
-npx prisma db push --accept-data-loss
-cd ..
-echo "[SUCCESS] Database schema synchronized successfully."
-echo ""
+# Step 4: Database Safety Check & Safe Initialization
+echo "[STEP 4/6] Checking Database State & Protecting Existing Records..."
+(cd backend && npx prisma generate)
 
-# Step 5: Database Seed
-echo "[STEP 5/6] Checking & Seeding Master Data..."
-cd backend
-npx prisma db seed || echo "[WARNING] Seed notice emitted, continuing..."
-cd ..
-echo "[SUCCESS] Database master data verified."
+set +e
+node scripts/check-db-init.js
+DB_STATE=$?
+set -e
+
+if [ $DB_STATE -eq 10 ]; then
+    echo "-------------------------------------------------------------------------"
+    echo "[SAFETY NOTICE] Active database with existing objects detected!"
+    echo "[SAFETY NOTICE] Skipping 'db push' and 'db seed' to protect existing data."
+    echo "[INFO] For ongoing production updates, use: ./scripts/deploy-production.sh"
+    echo "-------------------------------------------------------------------------"
+elif [ $DB_STATE -eq 0 ]; then
+    echo "[INFO] Clean empty database detected. Performing initial schema creation..."
+    (cd backend && npx prisma db push)
+    echo "[SUCCESS] Initial database schema synchronized safely."
+    echo ""
+    echo "[STEP 5/6] Seeding Initial Master Lookup Data for First-Time Setup..."
+    (cd backend && npx prisma db seed)
+    echo "[SUCCESS] Master lookup data seeded."
+else
+    echo "[ERROR] Database verification failed (exit code $DB_STATE). Halting setup to prevent data loss."
+    exit 1
+fi
 echo ""
 
 # Step 6: Build Binaries
