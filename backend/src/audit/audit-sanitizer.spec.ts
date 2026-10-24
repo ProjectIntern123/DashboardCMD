@@ -354,5 +354,21 @@ describe('Audit Log Payload Sanitizer (audit-sanitizer.ts)', () => {
       };
       expect(sanitizeAuditPayload(mockDecimal)).toBe('12.5000');
     });
+
+    it('11. Redacts tempPassword field in administrative reset response payload while verifying message contains no leaked secrets', () => {
+      const syntheticSecret = 'SyntheticTempPass99!';
+      const adminResetResponse = {
+        success: true,
+        tempPassword: syntheticSecret,
+        emailSent: true,
+        message: 'Temporary password generated and emailed to employee@hartek.com.',
+      };
+
+      const sanitized = sanitizeAuditPayload(adminResetResponse);
+
+      expect(sanitized.tempPassword).toBe(REDACTED_MARKER);
+      expect(sanitized.message).not.toContain(syntheticSecret);
+      expect(JSON.stringify(sanitized)).not.toContain(syntheticSecret);
+    });
   });
 });

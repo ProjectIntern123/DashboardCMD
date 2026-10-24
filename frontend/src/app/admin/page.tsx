@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '../../lib/api';
 import EmailTemplatesAdmin from './components/EmailTemplatesAdmin';
@@ -187,6 +187,60 @@ export default function AdminConsolePage() {
     managerId: '',
     active: true,
   });
+
+  // Temporary key one-time display modal state
+  const [tempKeyModal, setTempKeyModal] = useState<{
+    open: boolean;
+    tempPassword: string;
+    userEmail: string;
+    userName: string;
+    copied?: boolean;
+    copyError?: string | null;
+  } | null>(null);
+  const copyTimeoutRef = useRef<any>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimeoutRef.current) {
+        clearTimeout(copyTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const closeTempKeyModal = () => {
+    if (copyTimeoutRef.current) {
+      clearTimeout(copyTimeoutRef.current);
+      copyTimeoutRef.current = null;
+    }
+    setTempKeyModal(null);
+  };
+
+  const handleCopyTempPassword = async () => {
+    if (!tempKeyModal) return;
+
+    if (copyTimeoutRef.current) {
+      clearTimeout(copyTimeoutRef.current);
+      copyTimeoutRef.current = null;
+    }
+
+    if (typeof navigator === 'undefined' || !navigator.clipboard || !navigator.clipboard.writeText) {
+      setTempKeyModal(prev => prev ? { ...prev, copied: false, copyError: 'Clipboard access is unavailable in this environment. Please select and copy the key manually.' } : null);
+      showToast('Clipboard access unavailable. Please copy the key manually.', 'err');
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(tempKeyModal.tempPassword);
+      setTempKeyModal(prev => prev ? { ...prev, copied: true, copyError: null } : null);
+      copyTimeoutRef.current = setTimeout(() => {
+        setTempKeyModal(prev => prev ? { ...prev, copied: false } : null);
+        copyTimeoutRef.current = null;
+      }, 2000);
+    } catch {
+      setTempKeyModal(prev => prev ? { ...prev, copied: false, copyError: 'Unable to write to clipboard. Please select and copy the key manually.' } : null);
+      showToast('Could not copy to clipboard. Please copy the key manually.', 'err');
+    }
+  };
 
   // Role Management state
   const [selectedRole, setSelectedRole] = useState<any>(null);
@@ -2986,7 +3040,20 @@ export default function AdminConsolePage() {
                         if (confirm('Are you sure you want to reset this user\'s password to a temporary key and send it via email?')) {
                           try {
                             const res = await api.post(`/users/${userForm.id}/reset-password-temp`);
-                            showToast(res?.message || `Temporary password key generated: ${res?.tempPassword}`);
+                            if (res?.emailSent) {
+                              showToast(res?.message || 'Temporary password generated and emailed.');
+                            } else if (res?.tempPassword) {
+                              setTempKeyModal({
+                                open: true,
+                                tempPassword: res.tempPassword,
+                                userEmail: userForm.email,
+                                userName: userForm.name || 'User',
+                                copied: false,
+                              });
+                              showToast('Temporary key generated. Manual distribution required.', 'ok');
+                            } else {
+                              showToast(res?.message || 'Password reset completed.');
+                            }
                           } catch (err: any) {
                             showToast(err.message || 'Error resetting password', 'err');
                           }
@@ -3444,6 +3511,67 @@ export default function AdminConsolePage() {
                 style={{ padding: '10px 18px', background: '#ef4444', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 700, fontSize: '13px', boxShadow: '0 4px 12px rgba(239, 68, 68, 0.2)' }}
               >
                 Yes, Logout
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TEMPORARY SECURITY KEY ONE-TIME DISPLAY MODAL */}
+      {tempKeyModal && tempKeyModal.open && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10001 }}>
+          <div style={{ background: isDark ? '#1e293b' : '#fff', border: isDark ? '1px solid #334155' : '1px solid #e2e8f0', padding: '28px', borderRadius: '12px', maxWidth: '480px', width: '100%', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.3)', color: isDark ? '#f1f5f9' : '#0f172a', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: isDark ? '1px solid #334155' : '1px solid #f1f5f9', paddingBottom: '12px' }}>
+              <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: isDark ? '#fbbf24' : '#d97706', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                🔑 One-Time Temporary Password
+              </h3>
+              <button
+                type="button"
+                onClick={closeTempKeyModal}
+                style={{ background: 'transparent', border: 'none', color: isDark ? '#cbd5e1' : '#475569', fontSize: '18px', cursor: 'pointer' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div style={{ padding: '10px 14px', background: isDark ? 'rgba(239, 68, 68, 0.15)' : '#fef2f2', border: '1px solid #fca5a5', borderRadius: '8px', fontSize: '12px', color: isDark ? '#fca5a5' : '#b91c1c' }}>
+              <strong>Email Delivery Status:</strong> Unconfigured / Suppressed. The automatic notification could not be dispatched to <strong>{tempKeyModal.userEmail}</strong>. Please share this temporary key with the user manually.
+            </div>
+
+            <div style={{ fontSize: '13px', color: isDark ? '#94a3b8' : '#64748b' }}>
+              Temporary password for <strong>{tempKeyModal.userName}</strong>:
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: isDark ? '#0f172a' : '#f8fafc', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', padding: '12px 16px', borderRadius: '8px' }}>
+              <span style={{ fontFamily: 'monospace', fontSize: '18px', fontWeight: 700, letterSpacing: '1px', flex: 1, color: isDark ? '#38bdf8' : '#0284c7', userSelect: 'all' }}>
+                {tempKeyModal.tempPassword}
+              </span>
+              <button
+                type="button"
+                onClick={handleCopyTempPassword}
+                style={{ padding: '6px 14px', background: tempKeyModal.copied ? '#10b981' : (branding.primary_color || 'var(--navy)'), color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}
+              >
+                {tempKeyModal.copied ? '✓ Copied' : '📋 Copy'}
+              </button>
+            </div>
+
+            {tempKeyModal.copyError && (
+              <div style={{ padding: '8px 12px', background: isDark ? 'rgba(239, 68, 68, 0.1)' : '#fef2f2', border: '1px solid #fca5a5', borderRadius: '6px', fontSize: '12px', color: isDark ? '#fca5a5' : '#b91c1c' }}>
+                ⚠️ {tempKeyModal.copyError}
+              </div>
+            )}
+
+            <div style={{ fontSize: '11px', color: isDark ? '#64748b' : '#94a3b8' }}>
+              ⚠️ This key is displayed only once and is not stored in browser storage. The user will be required to change their password upon next login.
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '4px' }}>
+              <button
+                type="button"
+                onClick={closeTempKeyModal}
+                style={{ padding: '8px 18px', background: isDark ? '#334155' : '#f1f5f9', color: isDark ? '#cbd5e1' : '#475569', border: isDark ? '1px solid #4b5563' : '1px solid #cbd5e1', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}
+              >
+                Done
               </button>
             </div>
           </div>
