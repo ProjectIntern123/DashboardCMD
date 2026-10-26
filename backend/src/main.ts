@@ -14,6 +14,7 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 import { PrismaService } from './prisma/prisma.service';
+import { getListenConfig } from './common/config/server.config';
 import * as express from 'express';
 import cookieParser = require('cookie-parser');
 
@@ -49,9 +50,9 @@ async function bootstrap() {
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
   });
 
-  const port = process.env.PORT || 4000;
-  await app.listen(port, '0.0.0.0');
-  console.log(`NestJS application running on: http://localhost:${port}/api`);
+  const { port, host } = getListenConfig();
+  await app.listen(port, host);
+  console.log(`NestJS application running on: http://${host}:${port}/api`);
 
   // Run automatic Super Admin role migration
   try {
