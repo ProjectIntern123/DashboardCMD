@@ -78,7 +78,7 @@ describe('Staging-Only Synthetic Seed Safety Controls', () => {
     it('refuses execution when STAGING_ADMIN_PASSWORD is missing or blank', () => {
       const missingPassEnv: NodeJS.ProcessEnv = {
         APP_ENV: 'staging',
-        DATABASE_URL: 'postgresql://user:pass@127.0.0.1:5432/cmd_staging',
+        DATABASE_URL: 'postgresql://cmd_staging_user:pass@127.0.0.1:5432/cmd_staging',
       };
 
       expect(() => validateStagingSeedEnvironment(missingPassEnv)).toThrow(
@@ -89,12 +89,25 @@ describe('Staging-Only Synthetic Seed Safety Controls', () => {
     it('refuses execution when STAGING_ADMIN_PASSWORD is too short (< 12 characters)', () => {
       const weakPassEnv: NodeJS.ProcessEnv = {
         APP_ENV: 'staging',
-        DATABASE_URL: 'postgresql://user:pass@127.0.0.1:5432/cmd_staging',
+        DATABASE_URL: 'postgresql://cmd_staging_user:pass@127.0.0.1:5432/cmd_staging',
         STAGING_ADMIN_PASSWORD: 'ShortPass1',
       };
 
       expect(() => validateStagingSeedEnvironment(weakPassEnv)).toThrow(
         /STAGING_ADMIN_PASSWORD environment variable is required and must be at least 12 characters/,
+      );
+    });
+
+    it('refuses execution when contradictory staging and production signals are set', () => {
+      const contradictoryEnv: NodeJS.ProcessEnv = {
+        APP_ENV: 'staging',
+        DEPLOY_ENV: 'production',
+        DATABASE_URL: 'postgresql://cmd_staging_user:pass@127.0.0.1:5432/cmd_staging',
+        STAGING_ADMIN_PASSWORD: 'ValidStagingSecureAdminPassword2026!',
+      };
+
+      expect(() => validateStagingSeedEnvironment(contradictoryEnv)).toThrow(
+        /Contradictory environment variables detected/,
       );
     });
 
@@ -242,6 +255,120 @@ describe('Staging-Only Synthetic Seed Safety Controls', () => {
       await runStagingSeed(mockPrisma as any, validStagingEnv);
       expect(mockPrisma.calls.upsert.length).toBe(initialUpsertCount * 2);
       expect(mockPrisma.calls.delete.length).toBe(0);
+    });
+
+    it('upserts ONLY approved synthetic accounts, preserving passwords and custom attributes', async () => {
+      const mockPrisma = createMockPrisma();
+      const upsertArgs: any[] = [];
+      mockPrisma.user.upsert = jest.fn(async (args) => {
+        upsertArgs.push(args);
+        return { id: `user-${args.where.email}`, email: args.where.email };
+      });
+
+      await runStagingSeed(mockPrisma as any, validStagingEnv);
+
+      const approvedEmails = [
+        'admin@staging.example.com',
+        'manager@staging.example.com',
+        'supervisor@staging.example.com',
+        'employee@staging.example.com',
+        'viewer@staging.example.com',
+      ];
+
+      expect(upsertArgs.length).toBe(approvedEmails.length);
+
+      for (const call of upsertArgs) {
+        expect(approvedEmails).toContain(call.where.email);
+
+        // Verify update payload ONLY resets roleId and active: true
+        expect(call.update).toHaveProperty('roleId');
+        expect(call.update.active).toBe(true);
+        expect(call.update.passwordHash).toBeUndefined();
+        expect(call.update.name).toBeUndefined();
+        expect(call.update.initials).toBeUndefined();
+        expect(call.update.departmentId).toBeUndefined();
+      }
+    });
+
+    it('leaves existing unrelated QA and staging users completely untouched', async () => {
+      const mockPrisma = createMockPrisma();
+      const touchedEmails: string[] = [];
+      mockPrisma.user.upsert = jest.fn(async (args) => {
+        touchedEmails.push(args.where.email);
+        return { id: `user-${args.where.email}`, email: args.where.email };
+      });
+      const updateSpy = jest.fn();
+      const deleteSpy = jest.fn();
+      const deleteManySpy = jest.fn();
+      (mockPrisma.user as any).update = updateSpy;
+      (mockPrisma.user as any).delete = deleteSpy;
+      (mockPrisma.user as any).deleteMany = deleteManySpy;
+
+      await runStagingSeed(mockPrisma as any, validStagingEnv);
+
+      const unrelatedQaUsers = [
+        'qa_lead@staging.example.com',
+        'tester_manual@staging.local',
+        'external_auditor@staging.example.com',
+      ];
+
+      for (const qaUser of unrelatedQaUsers) {
+        expect(touchedEmails).not.toContain(qaUser);
+      }
+      expect(updateSpy).not.toHaveBeenCalled();
+      expect(deleteSpy).not.toHaveBeenCalled();
+      expect(deleteManySpy).not.toHaveBeenCalled();
+    });
+
+    it('preserves existing custom settings, department definitions, and permission grants on repeated execution', async () => {
+      const mockPrisma = createMockPrisma();
+      let createManySettingsArgs: any = null;
+      mockPrisma.systemSetting.createMany = jest.fn(async (args) => {
+        createManySettingsArgs = args;
+        return { count: args.data.length };
+      });
+
+      // Department findFirst simulates finding existing department
+      mockPrisma.department.findFirst = jest.fn(async ({ where }) => ({
+        id: `existing-${where.name}`,
+        name: where.name,
+      }));
+      mockPrisma.department.create = jest.fn();
+
+      const roleUpsertArgs: any[] = [];
+      mockPrisma.role.upsert = jest.fn(async (args) => {
+        roleUpsertArgs.push(args);
+        return { id: `role-${args.where.name}`, name: args.where.name };
+      });
+
+      let permissionArgs: any = null;
+      mockPrisma.permission.createMany = jest.fn(async (args) => {
+        permissionArgs = args;
+        return { count: args.data.length };
+      });
+
+      let rolePermArgs: any = null;
+      mockPrisma.rolePermission.createMany = jest.fn(async (args) => {
+        rolePermArgs = args;
+        return { count: args.data.length };
+      });
+
+      await runStagingSeed(mockPrisma as any, validStagingEnv);
+
+      // 1. Settings use skipDuplicates: true (never overwrites custom settings)
+      expect(createManySettingsArgs.skipDuplicates).toBe(true);
+
+      // 2. Department.create is NEVER called when department already exists
+      expect(mockPrisma.department.create).not.toHaveBeenCalled();
+
+      // 3. Roles use update: {} (never alters existing roles)
+      for (const r of roleUpsertArgs) {
+        expect(r.update).toEqual({});
+      }
+
+      // 4. Permissions and RolePermissions use skipDuplicates: true
+      expect(permissionArgs.skipDuplicates).toBe(true);
+      expect(rolePermArgs.skipDuplicates).toBe(true);
     });
   });
 });

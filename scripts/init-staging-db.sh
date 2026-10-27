@@ -86,32 +86,48 @@ fi
 # ------------------------------------------------------------------------------
 echo "==> Step 2: Validating Database Safety & Isolation Guards..."
 
-DB_PROTOCOL=$(echo "$STAGING_DB_URL" | sed -E 's|^([^:]+).*|\1|')
-if [ "$DB_PROTOCOL" != "postgresql" ] && [ "$DB_PROTOCOL" != "postgres" ]; then
-    echo "  [CRITICAL ERROR] Invalid database protocol: '$DB_PROTOCOL'. Expected 'postgresql' or 'postgres'."
+# Robust WHATWG URL parsing using Node.js runtime (handles IPv4, IPv6, URL-encoded credentials)
+if ! PARSED_FIELDS=$(TARGET_URL="$STAGING_DB_URL" node -e '
+  const raw = process.env.TARGET_URL || "";
+  try {
+    const u = new URL(raw.trim());
+    const proto = (u.protocol || "").replace(/:$/, "").toLowerCase();
+    if (proto !== "postgresql" && proto !== "postgres") {
+      process.stderr.write("[CRITICAL ERROR] Invalid database protocol: \"" + proto + "\". Expected \"postgresql\" or \"postgres\".\n");
+      process.exit(2);
+    }
+    const host = (u.hostname || "").toLowerCase().trim().replace(/^\[|\]$/g, "");
+    if (!host || host === "0.0.0.0") {
+      process.stderr.write("[CRITICAL ERROR] Invalid or bind-all database host: \"" + host + "\".\n");
+      process.exit(3);
+    }
+    const port = u.port || "5432";
+    const portNum = parseInt(port, 10);
+    if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
+      process.stderr.write("[CRITICAL ERROR] Invalid database port: \"" + port + "\". Port must be between 1 and 65535.\n");
+      process.exit(4);
+    }
+    const db = (u.pathname || "").replace(/^\//, "").split("?")[0].trim();
+    if (!db) {
+      process.stderr.write("[CRITICAL ERROR] Database name is missing from staging DATABASE_URL path!\n");
+      process.exit(5);
+    }
+    const user = decodeURIComponent(u.username || "").trim();
+    if (!user) {
+      process.stderr.write("[CRITICAL ERROR] Database username is missing from staging DATABASE_URL! A dedicated staging user is required.\n");
+      process.exit(6);
+    }
+    process.stdout.write([proto, host, port, db, user].join("\t"));
+  } catch (err) {
+    process.stderr.write("[CRITICAL ERROR] Failed to parse staging DATABASE_URL: Invalid URL format.\n");
+    process.exit(1);
+  }
+'); then
+    echo "  $PARSED_FIELDS"
     exit 1
 fi
 
-URL_WITHOUT_PROTO=$(echo "$STAGING_DB_URL" | sed -E 's|^[a-zA-Z0-9_+]+://||')
-URL_HOST_AND_PATH=$(echo "$URL_WITHOUT_PROTO" | sed -E 's|^[^@]+@||')
-HOST_PORT_PART=$(echo "$URL_HOST_AND_PATH" | cut -d '/' -f1)
-DB_HOST=$(echo "$HOST_PORT_PART" | cut -d ':' -f1)
-DB_PORT="5432"
-if echo "$HOST_PORT_PART" | grep -q ':'; then
-    DB_PORT=$(echo "$HOST_PORT_PART" | cut -d ':' -f2)
-fi
-DB_PATH_AND_QUERY=$(echo "$URL_HOST_AND_PATH" | cut -d '/' -f2-)
-DB_NAME=$(echo "$DB_PATH_AND_QUERY" | cut -d '?' -f1 | tr -d '/')
-
-if [ -z "$DB_HOST" ] || [ "$DB_HOST" = "0.0.0.0" ]; then
-    echo "  [CRITICAL ERROR] Invalid or bind-all database host: '$DB_HOST'."
-    exit 1
-fi
-
-if [ -z "$DB_NAME" ]; then
-    echo "  [CRITICAL ERROR] Database name is missing from staging DATABASE_URL path!"
-    exit 1
-fi
+IFS=$'\t' read -r DB_PROTOCOL DB_HOST DB_PORT DB_NAME DB_USER <<< "$PARSED_FIELDS"
 
 # 1. Reject production database names and variants
 LOWER_DB_NAME=$(echo "$DB_NAME" | tr '[:upper:]' '[:lower:]')
@@ -130,7 +146,23 @@ if ! echo "$LOWER_DB_NAME" | grep -qE '(staging|stage|test)'; then
     exit 1
 fi
 
-# 3. Compare against production configuration if on disk
+# 3. Reject known PostgreSQL superuser accounts and require dedicated staging user
+LOWER_DB_USER=$(echo "$DB_USER" | tr '[:upper:]' '[:lower:]')
+case "$LOWER_DB_USER" in
+    postgres|root|admin|administrator|superuser)
+        echo "  [CRITICAL ISOLATION BREACH REJECTED] Staging cannot connect using superuser account '$DB_USER'!"
+        echo "  A dedicated staging database user (e.g. 'cmd_staging') is required."
+        exit 1
+        ;;
+esac
+
+if ! echo "$LOWER_DB_USER" | grep -qE '(staging|stage|test)'; then
+    echo "  [CRITICAL ERROR] Unsafe staging database user '$DB_USER'!"
+    echo "  Staging database user must explicitly contain 'staging', 'stage', or 'test' (e.g. 'cmd_staging')."
+    exit 1
+fi
+
+# 4. Compare against production configuration if on disk
 PROD_ENV_FILE=""
 if [ -f "backend/.env" ]; then
     PROD_ENV_FILE="backend/.env"
@@ -141,13 +173,45 @@ fi
 if [ -n "$PROD_ENV_FILE" ]; then
     PROD_DB_URL=$(grep -E '^[[:space:]]*DATABASE_URL=' "$PROD_ENV_FILE" | head -n1 | cut -d '=' -f2- | tr -d '"' | tr -d "'" | tr -d '\r' | xargs || true)
     if [ -n "$PROD_DB_URL" ]; then
-        PROD_WITHOUT_PROTO=$(echo "$PROD_DB_URL" | sed -E 's|^[a-zA-Z0-9_+]+://||')
-        PROD_HOST_AND_PATH=$(echo "$PROD_WITHOUT_PROTO" | sed -E 's|^[^@]+@||')
-        PROD_NAME=$(echo "$PROD_HOST_AND_PATH" | cut -d '/' -f2- | cut -d '?' -f1 | tr -d '/' | tr '[:upper:]' '[:lower:]')
+        if PROD_PARSED=$(TARGET_URL="$PROD_DB_URL" node -e '
+          const raw = process.env.TARGET_URL || "";
+          try {
+            const u = new URL(raw.trim());
+            const host = (u.hostname || "").toLowerCase().trim().replace(/^\[|\]$/g, "");
+            const port = u.port || "5432";
+            const db = (u.pathname || "").replace(/^\//, "").split("?")[0].trim().toLowerCase();
+            const user = decodeURIComponent(u.username || "").toLowerCase().trim();
+            process.stdout.write([host, port, db, user].join("\t"));
+          } catch {
+            process.exit(1);
+          }
+        ' 2>/dev/null); then
+            IFS=$'\t' read -r PROD_HOST PROD_PORT PROD_NAME PROD_USER <<< "$PROD_PARSED"
 
-        if [ "$LOWER_DB_NAME" = "$PROD_NAME" ]; then
-            echo "  [CRITICAL ISOLATION BREACH REJECTED] Staging database name matches production database in $PROD_ENV_FILE!"
-            exit 1
+            if [ "$LOWER_DB_NAME" = "$PROD_NAME" ]; then
+                echo "  [CRITICAL ISOLATION BREACH REJECTED] Staging database name matches production database in $PROD_ENV_FILE!"
+                exit 1
+            fi
+
+            IS_STAGING_LOOPBACK=0
+            case "$DB_HOST" in
+                localhost|127.*|::1|0:0:0:0:0:0:0:1) IS_STAGING_LOOPBACK=1 ;;
+            esac
+
+            IS_PROD_LOOPBACK=0
+            case "$PROD_HOST" in
+                localhost|127.*|::1|0:0:0:0:0:0:0:1) IS_PROD_LOOPBACK=1 ;;
+            esac
+
+            if [ "$IS_STAGING_LOOPBACK" -eq 1 ] && [ "$IS_PROD_LOOPBACK" -eq 1 ] && [ "$DB_PORT" = "$PROD_PORT" ] && [ "$LOWER_DB_NAME" = "$PROD_NAME" ]; then
+                echo "  [CRITICAL ISOLATION BREACH REJECTED] Staging database target matches production database identity on loopback ($DB_HOST:$DB_PORT)!"
+                exit 1
+            fi
+
+            if [ -n "$PROD_USER" ] && [ "$LOWER_DB_USER" = "$PROD_USER" ]; then
+                echo "  [CRITICAL ISOLATION BREACH REJECTED] Staging database user '$DB_USER' matches production database user in $PROD_ENV_FILE!"
+                exit 1
+            fi
         fi
     fi
 fi
@@ -155,6 +219,7 @@ fi
 REDACTED_URL="${DB_PROTOCOL}://[REDACTED]@${DB_HOST}:${DB_PORT}/${DB_NAME}"
 echo "  [ISOLATION VERIFIED] Target database host: '$DB_HOST'"
 echo "  [ISOLATION VERIFIED] Target database name: '$DB_NAME'"
+echo "  [ISOLATION VERIFIED] Target database user: '$DB_USER'"
 echo "  [ISOLATION VERIFIED] Redacted target:     $REDACTED_URL"
 
 # ------------------------------------------------------------------------------

@@ -1,20 +1,48 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-export function isStagingEnvironment(env: NodeJS.ProcessEnv = process.env): boolean {
-  return (
-    env.APP_ENV === 'staging' ||
-    env.DEPLOY_ENV === 'staging' ||
-    env.STAGING === 'true'
-  );
+/**
+ * Validates that environment flags are mutually consistent.
+ * Strictly throws if contradictory staging and production signals are detected simultaneously.
+ */
+export function validateEnvironmentConsistency(env: NodeJS.ProcessEnv = process.env): void {
+  const appEnv = (env.APP_ENV || '').toLowerCase().trim();
+  const deployEnv = (env.DEPLOY_ENV || '').toLowerCase().trim();
+  const stagingFlag = (env.STAGING || '').toLowerCase().trim();
+
+  const indicatesStaging = appEnv === 'staging' || deployEnv === 'staging' || stagingFlag === 'true';
+  const indicatesProduction = appEnv === 'production' || deployEnv === 'production';
+
+  if (indicatesStaging && indicatesProduction) {
+    throw new Error(
+      `[CRITICAL ENVIRONMENT CONFLICT] Contradictory environment variables detected: Both staging and production flags are set (APP_ENV="${env.APP_ENV || ''}", DEPLOY_ENV="${env.DEPLOY_ENV || ''}", STAGING="${env.STAGING || ''}"). Refusing to start to protect database isolation.`,
+    );
+  }
 }
 
-const FORBIDDEN_STATIC_DB_NAMES = new Set([
+export function isStagingEnvironment(env: NodeJS.ProcessEnv = process.env): boolean {
+  validateEnvironmentConsistency(env);
+  const appEnv = (env.APP_ENV || '').toLowerCase().trim();
+  const deployEnv = (env.DEPLOY_ENV || '').toLowerCase().trim();
+  const stagingFlag = (env.STAGING || '').toLowerCase().trim();
+
+  return appEnv === 'staging' || deployEnv === 'staging' || stagingFlag === 'true';
+}
+
+export const FORBIDDEN_STATIC_DB_NAMES = new Set([
   'cmd_office',
   'cmd_office_prod',
   'database_name',
   'postgres',
   'template1',
+]);
+
+export const FORBIDDEN_STATIC_DB_USERS = new Set([
+  'postgres',
+  'root',
+  'admin',
+  'administrator',
+  'superuser',
 ]);
 
 /**
@@ -36,6 +64,32 @@ export function isForbiddenProductionDbName(dbName: string): boolean {
     return true;
   }
   return false;
+}
+
+/**
+ * Determines whether a given host represents a loopback address.
+ * Covers localhost, IPv4 loopback (127.0.0.0/8), IPv6 localhost (::1, 0:0:0:0:0:0:0:1).
+ */
+export function isLoopbackHost(hostname: string): boolean {
+  const h = (hostname || '').toLowerCase().trim().replace(/^\[|\]$/g, '');
+  if (!h) return false;
+  if (h === 'localhost') return true;
+  if (h.startsWith('127.')) return true;
+  if (h === '::1' || h === '0:0:0:0:0:0:0:1') return true;
+  return false;
+}
+
+/**
+ * Normalizes host strings for comparison.
+ * Normalizes loopback representations to a canonical identifier.
+ * Note: Host normalization prevents accidental alias matching, but cannot prove physical infrastructure isolation.
+ */
+export function normalizeDatabaseHost(hostname: string): string {
+  const h = (hostname || '').toLowerCase().trim().replace(/^\[|\]$/g, '');
+  if (isLoopbackHost(h)) {
+    return 'LOOPBACK_CANONICAL';
+  }
+  return h;
 }
 
 /**
@@ -61,6 +115,7 @@ export interface ProductionDbIdentity {
   hostname: string;
   port: number;
   dbName: string;
+  username?: string;
 }
 
 /**
@@ -118,11 +173,12 @@ export function getTrustedProductionDbIdentity(
 
   try {
     const parsed = new URL(rawProdUrl.trim());
-    const hostname = (parsed.hostname || '').toLowerCase().trim();
+    const hostname = (parsed.hostname || '').toLowerCase().trim().replace(/^\[|\]$/g, '');
     const port = parsed.port ? parseInt(parsed.port, 10) : 5432;
     const dbName = (parsed.pathname || '').replace(/^\//, '').split('?')[0].trim().toLowerCase();
+    const username = decodeURIComponent(parsed.username || '').toLowerCase().trim();
     if (hostname && dbName) {
-      return { hostname, port, dbName };
+      return { hostname, port, dbName, username: username || undefined };
     }
   } catch {
     // Malformed production URL in file - cannot establish identity
@@ -138,18 +194,22 @@ export interface ValidationOptions {
 /**
  * Validates that staging database configuration is explicit and completely isolated from production.
  * Throws a fatal Error if:
- * 1. Staging indicator is present but DATABASE_URL is missing or blank.
- * 2. DATABASE_URL cannot be parsed as a PostgreSQL URL.
- * 3. DATABASE_URL has invalid protocol, missing hostname, bind-all host (0.0.0.0), or out-of-range port.
- * 4. DATABASE_URL points to known production database names (including cmd_office variants).
- * 5. DATABASE_URL database name does not contain an affirmative staging identifier (e.g. staging, stage, test).
- * 6. Staging target matches the trusted production database identity.
+ * 1. Conflicting environment flags are present.
+ * 2. Staging indicator is present but DATABASE_URL is missing or blank.
+ * 3. DATABASE_URL cannot be parsed as a PostgreSQL URL.
+ * 4. DATABASE_URL has invalid protocol, missing hostname, bind-all host (0.0.0.0), or out-of-range port.
+ * 5. DATABASE_URL points to known production database names (including cmd_office variants).
+ * 6. DATABASE_URL database name does not contain an affirmative staging identifier (e.g. staging, stage, test).
+ * 7. DATABASE_URL username is missing, uses a superuser account, lacks a staging keyword, or matches production user.
+ * 8. Staging target matches the trusted production database identity.
  */
 export function assertSafeStagingDatabaseUrl(
   databaseUrl?: string,
   env: NodeJS.ProcessEnv = process.env,
   options?: ValidationOptions,
 ): URL {
+  validateEnvironmentConsistency(env);
+
   if (!isStagingEnvironment(env)) {
     if (!databaseUrl || !databaseUrl.trim()) {
       throw new Error('[DATABASE CONFIGURATION ERROR] DATABASE_URL is required but was not provided.');
@@ -178,7 +238,7 @@ export function assertSafeStagingDatabaseUrl(
     );
   }
 
-  const hostname = (parsed.hostname || '').toLowerCase().trim();
+  const hostname = (parsed.hostname || '').toLowerCase().trim().replace(/^\[|\]$/g, '');
   if (!hostname) {
     throw new Error(
       '[CRITICAL STAGING DB ISOLATION FAILURE] Malformed database URL: Missing hostname.'
@@ -224,20 +284,55 @@ export function assertSafeStagingDatabaseUrl(
     );
   }
 
-  // 3. Where a trusted production database identity is available, compare against it
+  // 3. Reject superuser and require dedicated staging database user
+  const rawUsername = decodeURIComponent(parsed.username || '').trim();
+  if (!rawUsername) {
+    throw new Error(
+      '[CRITICAL STAGING DB ISOLATION FAILURE] Missing database username in staging DATABASE_URL. A dedicated staging database user (e.g., "cmd_staging") is required.'
+    );
+  }
+
+  const lowerUsername = rawUsername.toLowerCase();
+  if (FORBIDDEN_STATIC_DB_USERS.has(lowerUsername)) {
+    throw new Error(
+      `[CRITICAL STAGING DB ISOLATION FAILURE] Staging database connection cannot use superuser account "${rawUsername}". A dedicated staging database user (e.g., "cmd_staging") is required.`
+    );
+  }
+
+  if (
+    !lowerUsername.includes('staging') &&
+    !lowerUsername.includes('stage') &&
+    !lowerUsername.includes('test')
+  ) {
+    throw new Error(
+      `[CRITICAL STAGING DB ISOLATION FAILURE] Unsafe staging database user "${rawUsername}". Staging database user must explicitly contain "staging", "stage", or "test" (e.g., "cmd_staging").`
+    );
+  }
+
+  // 4. Where a trusted production database identity is available, compare against it
   const trustedProd =
     options?.trustedProdIdentity !== undefined
       ? options.trustedProdIdentity
       : getTrustedProductionDbIdentity(env, options?.customProdEnvPath);
 
   if (trustedProd) {
+    if (trustedProd.username && lowerUsername === trustedProd.username.toLowerCase()) {
+      throw new Error(
+        `[CRITICAL STAGING DB ISOLATION FAILURE] Staging database user matches production database user "${trustedProd.username}". A dedicated staging user is required.`
+      );
+    }
+
+    const stagingNormHost = normalizeDatabaseHost(hostname);
+    const prodNormHost = normalizeDatabaseHost(trustedProd.hostname);
+    const hostsMatch = stagingNormHost === prodNormHost;
+
     if (
-      hostname === trustedProd.hostname &&
+      hostsMatch &&
       portNumber === trustedProd.port &&
       lowerDbName === trustedProd.dbName.toLowerCase()
     ) {
       throw new Error(
-        `[CRITICAL STAGING DB ISOLATION FAILURE] Staging database target matches the production database identity on host "${hostname}". Refusing to connect to production database.`
+        `[CRITICAL STAGING DB ISOLATION FAILURE] Staging database target matches the production database identity on host "${hostname}" (normalized: "${stagingNormHost}"). Refusing to connect to production database. Note: Host normalization prevents accidental alias matching, but cannot prove physical server isolation.`
       );
     }
   }
