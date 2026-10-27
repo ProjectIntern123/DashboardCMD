@@ -141,27 +141,60 @@ fi
 # ------------------------------------------------------------------------------
 echo "==> Step 4: Verifying Rollback Health..."
 
+# Reliable multi-tool HTTP probe helper: uses curl if available, falls back to node http
+check_http_endpoint() {
+    local url="$1"
+    if command -v curl &> /dev/null; then
+        curl -s -f "$url" > /dev/null 2>&1
+        return $?
+    elif command -v node &> /dev/null; then
+        node -e '
+            const http = require("http");
+            const url = process.argv[1];
+            const req = http.get(url, { timeout: 3000 }, (res) => {
+                if (res.statusCode >= 200 && res.statusCode < 400) {
+                    process.exit(0);
+                } else {
+                    process.exit(1);
+                }
+            });
+            req.on("error", () => process.exit(1));
+            req.on("timeout", () => { req.destroy(); process.exit(1); });
+        ' "$url" > /dev/null 2>&1
+        return $?
+    else
+        return 2 # Code 2: Neither probe tool is available
+    fi
+}
+
+PROBE_TOOL=""
+if command -v curl &> /dev/null; then
+    PROBE_TOOL="curl"
+elif command -v node &> /dev/null; then
+    PROBE_TOOL="node (http fallback)"
+else
+    echo "  [CRITICAL ERROR] Neither 'curl' nor 'node' executable is available for health verification."
+    echo "  Failing closed to prevent unverified rollback completion."
+    exit 1
+fi
+
+echo "  Health probe tool: $PROBE_TOOL"
+
 HEALTHY=false
 for i in {1..5}; do
     echo "  Health check attempt $i of 5 (waiting 3s)..."
     sleep 3
-    if command -v curl &> /dev/null; then
-        BACKEND_OK=false
-        FRONTEND_OK=false
+    BACKEND_OK=false
+    FRONTEND_OK=false
 
-        if curl -s -f http://127.0.0.1:4000/api/settings/public > /dev/null 2>&1; then
-            BACKEND_OK=true
-        fi
-        if curl -s -f http://127.0.0.1:3000/ > /dev/null 2>&1; then
-            FRONTEND_OK=true
-        fi
+    if check_http_endpoint "http://127.0.0.1:4000/api/settings/public"; then
+        BACKEND_OK=true
+    fi
+    if check_http_endpoint "http://127.0.0.1:3000/"; then
+        FRONTEND_OK=true
+    fi
 
-        if [ "$BACKEND_OK" = true ] && [ "$FRONTEND_OK" = true ]; then
-            HEALTHY=true
-            break
-        fi
-    else
-        echo "  [WARN] curl command not found. Skipping HTTP probe."
+    if [ "$BACKEND_OK" = true ] && [ "$FRONTEND_OK" = true ]; then
         HEALTHY=true
         break
     fi

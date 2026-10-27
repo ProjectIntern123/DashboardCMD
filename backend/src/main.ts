@@ -13,7 +13,6 @@ if (typeof process !== 'undefined' && !(process as any).getBuiltinModule) {
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
-import { PrismaService } from './prisma/prisma.service';
 import { getListenConfig } from './common/config/server.config';
 import * as express from 'express';
 import cookieParser = require('cookie-parser');
@@ -54,14 +53,6 @@ async function bootstrap() {
   await app.listen(port, host);
   console.log(`NestJS application running on: http://${host}:${port}/api`);
 
-  // Run automatic Super Admin role migration
-  try {
-    const prisma = app.get(PrismaService);
-    await migrateSuperAdminToAdmin(prisma);
-  } catch (err) {
-    console.error('Failed to run startup database migration:', err);
-  }
-
   // Log local network IP address
   try {
     const os = require('os');
@@ -75,68 +66,6 @@ async function bootstrap() {
     }
   } catch (e) {
     // Ignore
-  }
-}
-
-async function migrateSuperAdminToAdmin(prisma: any) {
-  try {
-    const superAdminRole = await prisma.role.findUnique({ where: { name: 'Super Admin' } });
-    let adminRole = await prisma.role.findUnique({ where: { name: 'Admin' } });
-    if (!adminRole) {
-      adminRole = await prisma.role.create({ data: { name: 'Admin' } });
-    }
-
-    if (superAdminRole) {
-      console.log('--- STARTING SUPER ADMIN TO ADMIN DATA MIGRATION ---');
-      
-      // 1. Move all users linked to Super Admin to Admin
-      const affectedUsers = await prisma.user.updateMany({
-        where: { roleId: superAdminRole.id },
-        data: { roleId: adminRole.id }
-      });
-      console.log(`Migrated ${affectedUsers.count} users from Super Admin to Admin role.`);
-
-      // 2. Move approval matrices
-      const affectedMatrices = await prisma.approvalMatrix.updateMany({
-        where: { roleId: superAdminRole.id },
-        data: { roleId: adminRole.id }
-      });
-      console.log(`Migrated ${affectedMatrices.count} approval matrices to Admin role.`);
-
-      // 3. Move permission relations
-      const superAdminPerms = await prisma.rolePermission.findMany({
-        where: { roleId: superAdminRole.id }
-      });
-      console.log(`Cloning ${superAdminPerms.length} permissions to Admin role.`);
-      for (const sap of superAdminPerms) {
-        await prisma.rolePermission.upsert({
-          where: {
-            roleId_permissionId: {
-              roleId: adminRole.id,
-              permissionId: sap.permissionId
-            }
-          },
-          update: {},
-          create: {
-            roleId: adminRole.id,
-            permissionId: sap.permissionId
-          }
-        });
-      }
-
-      // 4. Delete Super Admin permissions
-      await prisma.rolePermission.deleteMany({
-        where: { roleId: superAdminRole.id }
-      });
-
-      // 5. Delete Super Admin role
-      await prisma.role.delete({
-        where: { id: superAdminRole.id }
-      });
-      console.log('--- SUPER ADMIN TO ADMIN DATA MIGRATION COMPLETED ---');
-    }
-  } catch (error) {
-    console.error('Error during automatic Super Admin to Admin migration:', error);
   }
 }
 

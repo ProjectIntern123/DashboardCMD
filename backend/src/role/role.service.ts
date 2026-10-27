@@ -1,35 +1,12 @@
-import { Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
-export class RoleService implements OnModuleInit {
+export class RoleService {
   constructor(private prisma: PrismaService) {}
 
-  async onModuleInit() {
-    try {
-      let cmdRole = await this.prisma.role.findUnique({ where: { name: 'CMD' } });
-      if (!cmdRole) {
-        cmdRole = await this.prisma.role.create({ data: { name: 'CMD' } });
-      }
-      
-      const managerRole = await this.prisma.role.findUnique({
-        where: { name: 'Manager' },
-        include: { permissions: true },
-      });
-
-      if (managerRole && managerRole.permissions.length > 0) {
-        await this.prisma.rolePermission.createMany({
-          data: managerRole.permissions.map((p) => ({
-            roleId: cmdRole.id,
-            permissionId: p.permissionId,
-          })),
-          skipDuplicates: true,
-        });
-      }
-    } catch (e) {
-      // Ignore if db initializing
-    }
-  }
+  // Startup role mutations eliminated: roles and permissions are preserved
+  // and managed via the Admin Console or controlled initialization procedures.
 
   async findAll() {
     return this.prisma.role.findMany({

@@ -17,6 +17,7 @@ import {
   FaInfoCircle,
   FaToggleOn,
   FaToggleOff,
+  FaSyncAlt,
 } from 'react-icons/fa';
 
 interface EmailTemplate {
@@ -69,6 +70,31 @@ export default function EmailTemplatesAdmin({ isDark, showToast }: EmailTemplate
     isActive: true,
   });
   const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [showSyncConfirmModal, setShowSyncConfirmModal] = useState(false);
+
+  const handleSyncDefaults = async () => {
+    setSyncing(true);
+    setShowSyncConfirmModal(false);
+    try {
+      const res = await api.post('/email-templates/sync-defaults', {});
+      if (res && res.success) {
+        if (res.createdCount > 0) {
+          showToast(`Successfully synchronized ${res.createdCount} default template(s): ${res.createdKeys?.join(', ')}`, 'ok');
+        } else {
+          showToast('All system default templates already exist in database. Zero templates overwritten.', 'ok');
+        }
+        await loadInitialData();
+      } else {
+        showToast('Synchronization completed.', 'ok');
+        await loadInitialData();
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Failed to synchronize default templates', 'err');
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   useEffect(() => {
     loadInitialData();
@@ -244,25 +270,50 @@ export default function EmailTemplatesAdmin({ isDark, showToast }: EmailTemplate
           </p>
         </div>
 
-        <button
-          onClick={handleOpenCreateModal}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            background: isDark ? '#3b82f6' : '#0f2a4a',
-            color: '#ffffff',
-            border: 'none',
-            padding: '10px 18px',
-            borderRadius: '8px',
-            fontWeight: 600,
-            fontSize: '13px',
-            cursor: 'pointer',
-            transition: 'background 0.2s',
-          }}
-        >
-          <FaPlus /> Create Email Template
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+          <button
+            onClick={() => setShowSyncConfirmModal(true)}
+            disabled={syncing}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              background: isDark ? '#334155' : '#f1f5f9',
+              color: isDark ? '#f8fafc' : '#334155',
+              border: isDark ? '1px solid #475569' : '1px solid #cbd5e1',
+              padding: '10px 18px',
+              borderRadius: '8px',
+              fontWeight: 600,
+              fontSize: '13px',
+              cursor: syncing ? 'not-allowed' : 'pointer',
+              transition: 'all 0.2s',
+              opacity: syncing ? 0.7 : 1,
+            }}
+          >
+            {syncing ? <FaSpinner className="spin" /> : <FaSyncAlt />}
+            {syncing ? 'Syncing...' : 'Sync Default Templates'}
+          </button>
+
+          <button
+            onClick={handleOpenCreateModal}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              background: isDark ? '#3b82f6' : '#0f2a4a',
+              color: '#ffffff',
+              border: 'none',
+              padding: '10px 18px',
+              borderRadius: '8px',
+              fontWeight: 600,
+              fontSize: '13px',
+              cursor: 'pointer',
+              transition: 'background 0.2s',
+            }}
+          >
+            <FaPlus /> Create Email Template
+          </button>
+        </div>
       </div>
 
       {/* FILTER & ROSTER TABLE */}
@@ -852,6 +903,128 @@ export default function EmailTemplatesAdmin({ isDark, showToast }: EmailTemplate
                 }}
               >
                 Close Preview
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SYNC DEFAULT TEMPLATES CONFIRMATION MODAL */}
+      {showSyncConfirmModal && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.6)',
+            zIndex: 9999,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '20px',
+            backdropFilter: 'blur(3px)',
+          }}
+        >
+          <div
+            style={{
+              background: isDark ? '#1e293b' : '#ffffff',
+              borderRadius: '16px',
+              width: '540px',
+              maxWidth: '100%',
+              padding: '24px',
+              border: isDark ? '1px solid #334155' : '1px solid #e2e8f0',
+              boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+              <div
+                style={{
+                  width: '40px',
+                  height: '40px',
+                  borderRadius: '10px',
+                  background: isDark ? 'rgba(59, 130, 246, 0.2)' : '#eff6ff',
+                  color: isDark ? '#60a5fa' : '#2563eb',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '18px',
+                }}
+              >
+                <FaSyncAlt />
+              </div>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '17px', fontWeight: 700, color: isDark ? '#f8fafc' : '#0f172a' }}>
+                  Synchronize Default Email Templates
+                </h3>
+                <p style={{ margin: '2px 0 0 0', fontSize: '13px', color: isDark ? '#94a3b8' : '#64748b' }}>
+                  Explicit Administrator Maintenance Operation
+                </p>
+              </div>
+            </div>
+
+            <div
+              style={{
+                fontSize: '13px',
+                lineHeight: 1.6,
+                color: isDark ? '#cbd5e1' : '#334155',
+                background: isDark ? '#0f172a' : '#f8fafc',
+                padding: '16px',
+                borderRadius: '10px',
+                border: isDark ? '1px solid #334155' : '1px solid #e2e8f0',
+                marginBottom: '20px',
+              }}
+            >
+              <div style={{ marginBottom: '8px' }}>
+                This operation will scan the database for missing system notification templates (such as MFA OTP, Password Reset, and Account Status notifications) and create them.
+              </div>
+              <ul style={{ margin: '0 0 8px 0', paddingLeft: '20px', color: isDark ? '#94a3b8' : '#475569' }}>
+                <li>Existing customized templates will <strong>NEVER</strong> be overwritten.</li>
+                <li>Customized subjects, bodies, and activation flags are preserved.</li>
+                <li>Application startup remains 100% read-only; synchronization runs only on-demand.</li>
+              </ul>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+              <button
+                type="button"
+                onClick={() => setShowSyncConfirmModal(false)}
+                disabled={syncing}
+                style={{
+                  background: isDark ? '#334155' : '#f1f5f9',
+                  color: isDark ? '#cbd5e1' : '#475569',
+                  border: isDark ? '1px solid #475569' : '1px solid #cbd5e1',
+                  padding: '9px 18px',
+                  borderRadius: '8px',
+                  fontWeight: 600,
+                  fontSize: '13px',
+                  cursor: 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSyncDefaults}
+                disabled={syncing}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  background: isDark ? '#3b82f6' : '#0f2a4a',
+                  color: '#ffffff',
+                  border: 'none',
+                  padding: '9px 18px',
+                  borderRadius: '8px',
+                  fontWeight: 600,
+                  fontSize: '13px',
+                  cursor: syncing ? 'not-allowed' : 'pointer',
+                  opacity: syncing ? 0.7 : 1,
+                }}
+              >
+                {syncing ? <FaSpinner className="spin" /> : <FaCheck />}
+                {syncing ? 'Synchronizing...' : 'Confirm & Synchronize'}
               </button>
             </div>
           </div>

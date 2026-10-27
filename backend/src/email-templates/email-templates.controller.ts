@@ -37,6 +37,14 @@ export class EmailTemplatesController {
     return this.emailTemplatesService.findOne(id);
   }
 
+  @Post('sync-defaults')
+  syncDefaults(@GetUser('role') role: string) {
+    if (role !== 'Admin') {
+      throw new ForbiddenException('Only administrators can synchronize default email templates.');
+    }
+    return this.emailTemplatesService.syncDefaultTemplates();
+  }
+
   @Post()
   create(@Body() dto: CreateEmailTemplateDto, @GetUser('role') role: string) {
     if (role !== 'Admin') {

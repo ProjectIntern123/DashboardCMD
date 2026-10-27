@@ -132,31 +132,41 @@ export class EmailTemplatesService implements OnModuleInit {
   constructor(private prisma: PrismaService) {}
 
   async onModuleInit() {
-    try {
-      console.log('[EMAIL TEMPLATES] Synchronizing default system email templates in database...');
-      for (const evt of SYSTEM_NOTIFICATION_EVENTS) {
-        const existing = await this.prisma.emailTemplate.findUnique({
-          where: { eventKey: evt.eventKey },
-        });
+    // Read-only startup: in-memory definitions from SYSTEM_NOTIFICATION_EVENTS
+    // are automatically utilized as fallbacks by renderForEvent() if database records are missing.
+    // Unconditional database creation on boot is eliminated to guarantee zero startup mutations.
+  }
 
-        if (!existing) {
-          await this.prisma.emailTemplate.create({
-            data: {
-              name: evt.name,
-              eventKey: evt.eventKey,
-              subject: evt.defaultSubject,
-              body: evt.defaultBody,
-              description: evt.description,
-              isActive: true,
-            },
-          });
-          console.log(`[EMAIL TEMPLATES] Seeded missing template for event "${evt.eventKey}"`);
-        }
+  /**
+   * Explicit administrator-controlled operation to populate missing default templates into database.
+   * This is never called automatically on application startup.
+   */
+  async syncDefaultTemplates() {
+    const created: string[] = [];
+    for (const evt of SYSTEM_NOTIFICATION_EVENTS) {
+      const existing = await this.prisma.emailTemplate.findUnique({
+        where: { eventKey: evt.eventKey },
+      });
+
+      if (!existing) {
+        await this.prisma.emailTemplate.create({
+          data: {
+            name: evt.name,
+            eventKey: evt.eventKey,
+            subject: evt.defaultSubject,
+            body: evt.defaultBody,
+            description: evt.description,
+            isActive: true,
+          },
+        });
+        created.push(evt.eventKey);
       }
-      console.log('[EMAIL TEMPLATES] Default system email templates successfully synchronized.');
-    } catch (e) {
-      console.error('[EMAIL TEMPLATES] Seeding/Sync check skipped/failed:', e.message);
     }
+    return {
+      success: true,
+      createdCount: created.length,
+      createdKeys: created,
+    };
   }
 
   async findAll() {

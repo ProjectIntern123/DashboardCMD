@@ -1,9 +1,47 @@
 import { PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 
+export function assertNotProductionSeed(env: NodeJS.ProcessEnv = process.env): void {
+  const nodeEnv = (env.NODE_ENV || '').toLowerCase().trim();
+  const appEnv = (env.APP_ENV || '').toLowerCase().trim();
+
+  if (nodeEnv === 'production' || appEnv === 'production') {
+    throw new Error(
+      '[CRITICAL SAFETY ERROR] Production seeding is strictly forbidden! Aborting before database access to protect production data.'
+    );
+  }
+
+  const dbUrl = env.DATABASE_URL || '';
+  if (dbUrl) {
+    try {
+      const parsed = new URL(dbUrl);
+      const dbName = (parsed.pathname || '').replace(/^\//, '').split('?')[0].toLowerCase();
+      if (
+        dbName === 'cmd_office' ||
+        dbName === 'cmd_office_prod' ||
+        dbName === 'production' ||
+        dbName.startsWith('cmd_office_') ||
+        dbName.startsWith('cmd_office-')
+      ) {
+        throw new Error(
+          `[CRITICAL SAFETY ERROR] Target database "${dbName}" appears to be a production database. Seeding is strictly forbidden.`
+        );
+      }
+    } catch (e: any) {
+      if (e.message && e.message.startsWith('[CRITICAL SAFETY ERROR]')) {
+        throw e;
+      }
+      throw new Error(`[CRITICAL SAFETY ERROR] Invalid or unparseable DATABASE_URL in seed: ${e.message}`);
+    }
+  }
+}
+
 const prisma = new PrismaClient();
 
 async function main() {
+  // Fail-closed production environment guard before any database query or mutation
+  assertNotProductionSeed();
+
   console.log('Seeding database...');
 
   // Fail-closed guard: halt if database already contains users, system settings, roles, or permissions
@@ -235,11 +273,13 @@ async function main() {
   console.log('Seeding completed successfully!');
 }
 
-main()
-  .catch((e) => {
-    console.error(e);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+if (require.main === module) {
+  main()
+    .catch((e) => {
+      console.error(e.message || e);
+      process.exit(1);
+    })
+    .finally(async () => {
+      await prisma.$disconnect();
+    });
+}
