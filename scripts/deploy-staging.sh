@@ -116,11 +116,24 @@ cleanup_on_failure() {
                 exit "$exit_code"
             fi
             IN_ROLLBACK=1
-            echo "  ==> Initiating Automated Staging Rollback..."
-            if [ -f "./scripts/rollback-staging.sh" ]; then
-                bash ./scripts/rollback-staging.sh || echo "  [ALERT] Automated rollback encountered an issue. Inspect logs or run rollback manually."
+            if [ ! -d "backend/dist.prev" ] || [ ! -d "frontend/.next.prev" ]; then
+                echo "  [NOTICE] No previous staging release artifacts found (.prev). This was an initial staging deployment."
+                echo "  Automated rollback cannot restore a previous release because none exists."
+                if command -v pm2 &> /dev/null; then
+                    echo "  Stopping staging processes to prevent uncontrolled crash loops..."
+                    pm2 stop cmd-staging-backend > /dev/null 2>&1 || true
+                    pm2 stop cmd-staging-frontend > /dev/null 2>&1 || true
+                fi
+                echo "  Active artifacts in backend/dist and frontend/.next preserved for diagnostic inspection."
+                echo "  Staging logs preserved in ./logs/."
+                echo "  Manual recovery required: inspect ./logs/staging-backend-error.log and ./logs/staging-frontend-error.log."
             else
-                echo "  [ALERT] scripts/rollback-staging.sh not found!"
+                echo "  ==> Initiating Automated Staging Rollback..."
+                if [ -f "./scripts/rollback-staging.sh" ]; then
+                    bash ./scripts/rollback-staging.sh || echo "  [ALERT] Automated rollback encountered an issue. Inspect logs or run rollback manually."
+                else
+                    echo "  [ALERT] scripts/rollback-staging.sh not found!"
+                fi
             fi
             exit "$exit_code"
         else
@@ -257,15 +270,42 @@ fi
 echo "  [SUCCESS] Staging candidate artifacts atomically activated."
 
 # ------------------------------------------------------------------------------
-# STEP 8: RELOAD DEDICATED STAGING PROCESSES (PM2)
+# STEP 8: START OR RELOAD DEDICATED STAGING PROCESSES (PM2)
 # ------------------------------------------------------------------------------
-echo "==> Step 8: Reloading PM2 Staging Processes..."
+echo "==> Step 8: Managing PM2 Staging Processes..."
 
 if command -v pm2 &> /dev/null; then
-    echo "  Reloading staging configuration: ecosystem.staging.config.js..."
-    pm2 reload ecosystem.staging.config.js || pm2 restart ecosystem.staging.config.js
+    # Verify staging process presence using actual configured process names
+    HAS_BACKEND=0
+    HAS_FRONTEND=0
+    if pm2 describe cmd-staging-backend > /dev/null 2>&1; then
+        HAS_BACKEND=1
+    fi
+    if pm2 describe cmd-staging-frontend > /dev/null 2>&1; then
+        HAS_FRONTEND=1
+    fi
+
+    if [ "$HAS_BACKEND" -eq 1 ] && [ "$HAS_FRONTEND" -eq 1 ]; then
+        # State 2: Both applications registered -> Zero-downtime reload of existing processes
+        echo "  [PM2 STATE: BOTH REGISTERED] Reloading existing staging processes (ecosystem.staging.config.js)..."
+        pm2 reload ecosystem.staging.config.js || pm2 restart ecosystem.staging.config.js
+    elif [ "$HAS_BACKEND" -eq 0 ] && [ "$HAS_FRONTEND" -eq 0 ]; then
+        # State 1: Neither application registered -> Initial start of both processes
+        echo "  [PM2 STATE: NEITHER REGISTERED] Starting staging ecosystem processes (ecosystem.staging.config.js)..."
+        pm2 start ecosystem.staging.config.js
+    elif [ "$HAS_BACKEND" -eq 1 ] && [ "$HAS_FRONTEND" -eq 0 ]; then
+        # State 3: Backend registered, Frontend missing -> Reload backend, start only frontend
+        echo "  [PM2 STATE: BACKEND REGISTERED, FRONTEND MISSING] Reloading backend and starting frontend..."
+        pm2 reload cmd-staging-backend || pm2 restart cmd-staging-backend
+        pm2 start ecosystem.staging.config.js --only cmd-staging-frontend
+    elif [ "$HAS_BACKEND" -eq 0 ] && [ "$HAS_FRONTEND" -eq 1 ]; then
+        # State 4: Frontend registered, Backend missing -> Reload frontend, start only backend
+        echo "  [PM2 STATE: FRONTEND REGISTERED, BACKEND MISSING] Reloading frontend and starting backend..."
+        pm2 reload cmd-staging-frontend || pm2 restart cmd-staging-frontend
+        pm2 start ecosystem.staging.config.js --only cmd-staging-backend
+    fi
 else
-    echo "  [NOTE] PM2 command not found; skipping process reload."
+    echo "  [NOTE] PM2 command not found; skipping process management."
 fi
 
 # ------------------------------------------------------------------------------
