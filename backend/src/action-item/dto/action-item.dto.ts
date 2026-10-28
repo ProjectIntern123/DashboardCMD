@@ -76,3 +76,24 @@ export class CreateActionItemDto {
 }
 
 export class UpdateActionItemDto extends CreateActionItemDto {}
+
+export enum RemarkChannel {
+  USER = 'USER',
+  CMD = 'CMD',
+}
+
+export class CreateActionRemarkDto {
+  @IsString()
+  @IsNotEmpty({ message: 'Remark text cannot be empty' })
+  text: string;
+
+  @IsOptional()
+  @IsEnum(RemarkChannel, { message: 'Channel must be either USER or CMD' })
+  channel?: RemarkChannel;
+}
+
+export class UpdateActionRemarkDto {
+  @IsString()
+  @IsNotEmpty({ message: 'Remark text cannot be empty' })
+  text: string;
+}

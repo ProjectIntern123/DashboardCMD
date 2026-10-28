@@ -405,8 +405,8 @@ export default function AdminConsolePage() {
       setAttachmentSizeError('Maximum attachment size must be an integer whole number in MB.');
     } else {
       const parsed = parseInt(trimmed, 10);
-      if (parsed < 1 || parsed > 9999) {
-        setAttachmentSizeError('Maximum attachment size must be between 1 MB and 9999 MB.');
+      if (parsed < 1 || parsed > 35) {
+        setAttachmentSizeError('Maximum attachment size must be between 1 MB and 35 MB.');
       } else {
         setAttachmentSizeError(null);
       }
@@ -445,12 +445,12 @@ export default function AdminConsolePage() {
     if (e) e.preventDefault();
     const trimmed = attachmentSizeMb.trim();
     if (!trimmed || !/^\d+$/.test(trimmed)) {
-      setAttachmentSizeError('Please enter a valid whole number in MB (1 to 9999).');
+      setAttachmentSizeError('Please enter a valid whole number in MB (1 to 35).');
       return;
     }
     const parsed = parseInt(trimmed, 10);
-    if (parsed < 1 || parsed > 9999) {
-      setAttachmentSizeError('Maximum attachment size must be between 1 MB and 9999 MB.');
+    if (parsed < 1 || parsed > 35) {
+      setAttachmentSizeError('Maximum attachment size must be between 1 MB and 35 MB.');
       return;
     }
 
@@ -2606,7 +2606,7 @@ export default function AdminConsolePage() {
                           <input
                             type="number"
                             min="1"
-                            max="9999"
+                            max="35"
                             step="1"
                             value={attachmentSizeMb}
                             onChange={(e) => handleAttachmentSizeChange(e.target.value)}
@@ -2627,7 +2627,7 @@ export default function AdminConsolePage() {
                           </span>
                         </div>
                         <span style={{ fontSize: '11px', color: isDark ? '#94a3b8' : '#64748b' }}>
-                          Valid input range: <strong>1 MB</strong> to <strong>9999 MB</strong>. (1 MB = 1,048,576 bytes)
+                          Valid input range: <strong>1 MB</strong> to <strong>35 MB</strong>. (Bounded by the 50 MB server body limit; 35 MB raw expands to ~47 MB Base64).
                         </span>
                       </div>
 
@@ -2667,61 +2667,11 @@ export default function AdminConsolePage() {
                               gap: '8px'
                             }}>
                               <FaCheck style={{ flexShrink: 0 }} />
-                              <span><strong>Fully Supported:</strong> Fits within current Base64 JSON payload architecture and 50 MB Nginx/Express body limits.</span>
-                            </div>
-                          );
-                        } else if (val <= 50) {
-                          return (
-                            <div style={{
-                              padding: '10px 14px',
-                              borderRadius: '8px',
-                              background: isDark ? '#1e3a8a' : '#eff6ff',
-                              border: isDark ? '1px solid #3b82f6' : '1px solid #bfdbfe',
-                              color: isDark ? '#93c5fd' : '#1e40af',
-                              fontSize: '12px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '8px'
-                            }}>
-                              <FaExclamationTriangle style={{ flexShrink: 0 }} />
-                              <span><strong>Transport Advisory:</strong> Base64 inflates files by ~33%. Files &gt; 35 MB raw will exceed the 50 MB server body limit when transmitted as Base64 JSON. Multipart uploads (e.g. Legal CSV) support up to 50 MB.</span>
-                            </div>
-                          );
-                        } else if (val <= 1000) {
-                          return (
-                            <div style={{
-                              padding: '10px 14px',
-                              borderRadius: '8px',
-                              background: isDark ? '#78350f' : '#fef3c7',
-                              border: isDark ? '1px solid #d97706' : '1px solid #fcd34d',
-                              color: isDark ? '#fde68a' : '#92400e',
-                              fontSize: '12px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '8px'
-                            }}>
-                              <FaExclamationTriangle style={{ flexShrink: 0 }} />
-                              <span><strong>Infrastructure Advisory ({val} MB):</strong> Policy accepted, but files &gt; 50 MB exceed active Nginx (<code>client_max_body_size 50M</code>) and Express body parser limits. Reconfiguration of VPS reverse proxy and streaming/S3 storage is required for active uploads of this size.</span>
-                            </div>
-                          );
-                        } else {
-                          return (
-                            <div style={{
-                              padding: '10px 14px',
-                              borderRadius: '8px',
-                              background: isDark ? '#7f1d1d' : '#fee2e2',
-                              border: isDark ? '1px solid #ef4444' : '1px solid #fca5a5',
-                              color: isDark ? '#fca5a5' : '#991b1b',
-                              fontSize: '12px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '8px'
-                            }}>
-                              <FaExclamationTriangle style={{ flexShrink: 0 }} />
-                              <span><strong>High-Capacity Policy Notice ({val} MB):</strong> Policy accepted. Multi-gigabyte uploads cannot be stored as inline Base64 text (PostgreSQL 1 GB field ceiling &amp; 32-bit integer byte counter limits). Dedicated multipart chunked streaming to S3/external blob storage and schema BigInt migration are required.</span>
+                              <span><strong>Fully Supported:</strong> Fits within current Base64 JSON payload architecture and 50 MB server body limit (35 MB raw expands to ~47 MB Base64).</span>
                             </div>
                           );
                         }
+                        return null;
                       })()}
 
                       {/* Preset Buttons */}
@@ -2733,13 +2683,9 @@ export default function AdminConsolePage() {
                           {[
                             { mb: 5, label: '5 MB (Compact)' },
                             { mb: 10, label: '10 MB (Default)' },
+                            { mb: 20, label: '20 MB (Medium)' },
                             { mb: 25, label: '25 MB (Standard)' },
-                            { mb: 35, label: '35 MB (Max Inline)' },
-                            { mb: 50, label: '50 MB (Nginx Limit)' },
-                            { mb: 100, label: '100 MB' },
-                            { mb: 500, label: '500 MB' },
-                            { mb: 1000, label: '1000 MB' },
-                            { mb: 9999, label: '9999 MB (Policy Max)' },
+                            { mb: 35, label: '35 MB (Max Inline Ceiling)' },
                           ].map((preset) => {
                             const isSelected = attachmentSizeMb.trim() === String(preset.mb);
                             return (

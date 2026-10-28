@@ -180,6 +180,8 @@ export class SettingsService {
     // Hard ceiling for Base64 JSON payloads: 35 MB raw (expands to ~47 MB in Base64, fitting within 50MB Express limit)
     const transportCeilingBytes = SettingsService.MAX_SAFE_INLINE_BASE64_MB * 1024 * 1024;
 
+    let totalCumulativeBytes = 0;
+
     for (const att of attachments) {
       if (!att) continue;
       let effectiveSize = typeof att.size === 'number' && Number.isFinite(att.size) && att.size > 0 ? att.size : 0;
@@ -193,7 +195,9 @@ export class SettingsService {
         }
       }
 
-      // Check against configured policy
+      totalCumulativeBytes += effectiveSize;
+
+      // Check per-file against configured policy
       if (effectiveSize > configuredMaxBytes) {
         const sizeMb = (effectiveSize / (1024 * 1024)).toFixed(1);
         const fileName = att.name ? `"${att.name}"` : 'Attachment';
@@ -202,7 +206,7 @@ export class SettingsService {
         );
       }
 
-      // Check against transport payload capability if configured limit exceeds infrastructure ceiling
+      // Check per-file against transport payload capability if configured limit exceeds infrastructure ceiling
       if (effectiveSize > transportCeilingBytes) {
         const sizeMb = (effectiveSize / (1024 * 1024)).toFixed(1);
         const fileName = att.name ? `"${att.name}"` : 'Attachment';
@@ -210,6 +214,14 @@ export class SettingsService {
           `${fileName} (${sizeMb} MB) exceeds the 35 MB raw file ceiling for Base64 JSON payloads (bounded by the 50 MB server body limit). To upload files larger than 35 MB, streaming or multipart storage configuration is required.`
         );
       }
+    }
+
+    // Check cumulative request size for multi-file payloads
+    if (attachments.length > 1 && totalCumulativeBytes > transportCeilingBytes) {
+      const totalMb = (totalCumulativeBytes / (1024 * 1024)).toFixed(1);
+      throw new BadRequestException(
+        `Total attachments size (${totalMb} MB) in a single request exceeds the 35 MB raw file ceiling (bounded by the 50 MB server body limit). Please upload fewer or smaller files.`
+      );
     }
   }
 
@@ -237,8 +249,10 @@ export class SettingsService {
   }
 
   async updateAttachmentSizeLimit(maxMb: number) {
-    if (!Number.isInteger(maxMb) || maxMb < 1 || maxMb > 9999) {
-      throw new BadRequestException('Maximum attachment size must be an integer between 1 MB and 9999 MB.');
+    if (!Number.isInteger(maxMb) || maxMb < 1 || maxMb > SettingsService.MAX_SAFE_INLINE_BASE64_MB) {
+      throw new BadRequestException(
+        `Maximum attachment size must be an integer between 1 MB and ${SettingsService.MAX_SAFE_INLINE_BASE64_MB} MB.`
+      );
     }
     await this.prisma.systemSetting.upsert({
       where: { key: 'max_attachment_size_mb' },
@@ -248,18 +262,13 @@ export class SettingsService {
     this.cachedMaxAttachmentSizeMb = maxMb;
     this.cacheExpiry = Date.now() + 15000;
 
-    const isExceeded = maxMb > SettingsService.MAX_SAFE_INLINE_BASE64_MB;
-    const advisory = isExceeded
-      ? ` Limit set to ${maxMb} MB. Note: Files larger than 35 MB raw will exceed the 50 MB Nginx/Express body limits when Base64 encoded.`
-      : '';
-
     return {
       success: true,
       maxAttachmentSizeMb: maxMb,
       infrastructureLimitMb: SettingsService.INFRASTRUCTURE_PAYLOAD_LIMIT_MB,
       maxSafeInlineMb: SettingsService.MAX_SAFE_INLINE_BASE64_MB,
-      isInfrastructureExceeded: isExceeded,
-      message: `Maximum attachment size updated to ${maxMb} MB.${advisory}`,
+      isInfrastructureExceeded: false,
+      message: `Maximum attachment size updated to ${maxMb} MB.`,
     };
   }
 
@@ -271,11 +280,15 @@ export class SettingsService {
         throw new BadRequestException('Maximum attachment size is required.');
       }
       if (!/^\d+$/.test(strVal)) {
-        throw new BadRequestException('Maximum attachment size must be an integer between 1 MB and 9999 MB.');
+        throw new BadRequestException(
+          `Maximum attachment size must be an integer between 1 MB and ${SettingsService.MAX_SAFE_INLINE_BASE64_MB} MB.`
+        );
       }
       const num = parseInt(strVal, 10);
-      if (!Number.isFinite(num) || num < 1 || num > 9999) {
-        throw new BadRequestException('Maximum attachment size must be between 1 MB and 9999 MB.');
+      if (!Number.isFinite(num) || num < 1 || num > SettingsService.MAX_SAFE_INLINE_BASE64_MB) {
+        throw new BadRequestException(
+          `Maximum attachment size must be between 1 MB and ${SettingsService.MAX_SAFE_INLINE_BASE64_MB} MB.`
+        );
       }
       this.cachedMaxAttachmentSizeMb = num;
       this.cacheExpiry = Date.now() + 15000;

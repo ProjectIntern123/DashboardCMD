@@ -24,7 +24,7 @@ export class SettingsController {
     return {
       maxAttachmentSizeMb,
       minMb: 1,
-      maxMb: 9999,
+      maxMb: SettingsService.MAX_SAFE_INLINE_BASE64_MB,
       defaultMb: 10,
       infrastructureLimitMb: SettingsService.INFRASTRUCTURE_PAYLOAD_LIMIT_MB,
       maxSafeInlineMb: SettingsService.MAX_SAFE_INLINE_BASE64_MB,
@@ -45,11 +45,15 @@ export class SettingsController {
     const raw = body?.maxAttachmentSizeMb;
     const strVal = String(raw ?? '').trim();
     if (!strVal || !/^\d+$/.test(strVal)) {
-      throw new BadRequestException('Maximum attachment size must be an integer between 1 MB and 9999 MB.');
+      throw new BadRequestException(
+        `Maximum attachment size must be an integer between 1 MB and ${SettingsService.MAX_SAFE_INLINE_BASE64_MB} MB.`
+      );
     }
     const parsed = parseInt(strVal, 10);
-    if (parsed < 1 || parsed > 9999) {
-      throw new BadRequestException('Maximum attachment size must be between 1 MB and 9999 MB.');
+    if (parsed < 1 || parsed > SettingsService.MAX_SAFE_INLINE_BASE64_MB) {
+      throw new BadRequestException(
+        `Maximum attachment size must be between 1 MB and ${SettingsService.MAX_SAFE_INLINE_BASE64_MB} MB to fit within the server payload limits.`
+      );
     }
     return this.settingsService.updateAttachmentSizeLimit(parsed);
   }
