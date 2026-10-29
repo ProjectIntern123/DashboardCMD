@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { sanitizeAuditPayload } from './audit-sanitizer';
 
 @Injectable()
 export class AuditService {
@@ -29,8 +30,8 @@ export class AuditService {
         ipAddress: params.ipAddress || null,
         browser,
         device,
-        oldValues: params.oldValues || null,
-        newValues: params.newValues || null,
+        oldValues: params.oldValues ? sanitizeAuditPayload(params.oldValues) : null,
+        newValues: params.newValues ? sanitizeAuditPayload(params.newValues) : null,
       },
     });
   }

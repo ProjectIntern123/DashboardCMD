@@ -43,21 +43,44 @@ node scripts/bootstrap.js
 echo "[SUCCESS] Dependencies verified and ready."
 echo ""
 
-# Step 4: Database Schema Migration
-echo "[STEP 4/6] Checking Database Connection & Synchronizing Schema..."
-cd backend
-echo "[INFO] Running Prisma Database Schema Push..."
-npx prisma db push --accept-data-loss
-cd ..
-echo "[SUCCESS] Database schema synchronized successfully."
-echo ""
+# Step 4: Database Safety Check & Safe Initialization
+echo "[STEP 4/6] Checking Database State & Protecting Existing Records..."
 
-# Step 5: Database Seed
-echo "[STEP 5/6] Checking & Seeding Master Data..."
-cd backend
-npx prisma db seed || echo "[WARNING] Seed notice emitted, continuing..."
-cd ..
-echo "[SUCCESS] Database master data verified."
+# Production environment lock: fail-closed to protect production environments
+if [ "${NODE_ENV:-}" = "production" ] || [ "${APP_ENV:-}" = "production" ]; then
+    echo "========================================================================="
+    echo "[PRODUCTION SAFETY LOCK] setup.sh is strictly for local development only."
+    echo "Automatic schema push and seeding are completely disabled in production."
+    echo "For production deployment, use: ./scripts/deploy-production.sh"
+    echo "========================================================================="
+    exit 1
+fi
+
+(cd backend && npx prisma generate)
+
+set +e
+node scripts/check-db-init.js
+DB_STATE=$?
+set -e
+
+if [ $DB_STATE -eq 10 ]; then
+    echo "-------------------------------------------------------------------------"
+    echo "[SAFETY NOTICE] Active database with existing objects detected!"
+    echo "[SAFETY NOTICE] Skipping 'db push' and 'db seed' to protect existing data."
+    echo "[INFO] For ongoing production updates, use: ./scripts/deploy-production.sh"
+    echo "-------------------------------------------------------------------------"
+elif [ $DB_STATE -eq 0 ]; then
+    echo "[INFO] Clean empty development database detected. Performing initial schema creation..."
+    (cd backend && npx prisma db push)
+    echo "[SUCCESS] Initial database schema synchronized safely."
+    echo ""
+    echo "[STEP 5/6] Database Seeding Status..."
+    echo "[NOTICE] Automatic seeding is disabled to guarantee zero unintended records."
+    echo "[NOTICE] For staging environments, use: bash scripts/init-staging-db.sh"
+else
+    echo "[ERROR] Database verification failed (exit code $DB_STATE). Halting setup to prevent data loss."
+    exit 1
+fi
 echo ""
 
 # Step 6: Build Binaries
@@ -70,9 +93,10 @@ echo "========================================================================="
 echo "         SETUP COMPLETE! THE CMD COMMAND CENTER IS READY TO RUN!"
 echo "========================================================================="
 echo ""
-echo "Admin Credentials:"
-echo "  - System Admin: project-ops@hartek.com"
-echo "  - (Use 'node scripts/create-admin.js <email> <password>' to create additional admins)"
+echo "Administrator Setup:"
+echo "  - Automatic seeding is disabled to protect against default credentials."
+echo "  - Create an administrator explicitly using:"
+echo "    node scripts/create-admin.js <email> <password> [name] [initials]"
 echo ""
 echo "To run in development mode:       ./run.sh"
 echo "To run in production with PM2:    pm2 start ecosystem.config.js"

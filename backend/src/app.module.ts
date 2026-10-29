@@ -19,10 +19,12 @@ import { SettingsModule } from './settings/settings.module';
 import { UserModule } from './user/user.module';
 import { RoleModule } from './role/role.module';
 import { EmailTemplatesModule } from './email-templates/email-templates.module';
+import { CommonModule } from './common/common.module';
 
 @Module({
   imports: [
     PrismaModule,
+    CommonModule,
     AuthModule,
     ProjectModule,
     MeetingModule,

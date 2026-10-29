@@ -2,12 +2,15 @@ import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards } fro
 import { EscalationService } from './escalation.service';
 import { CreateEscalationDto, UpdateEscalationDto } from './dto/escalation.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { PortalGuard } from '../auth/guards/portal.guard';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { UserPortalOnly } from '../auth/decorators/portal.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { GetUser } from '../auth/decorators/get-user.decorator';
 
 @Controller('escalations')
-@UseGuards(JwtAuthGuard, PermissionsGuard)
+@UseGuards(JwtAuthGuard, PortalGuard, PermissionsGuard)
+@UserPortalOnly()
 export class EscalationController {
   constructor(private readonly escalationService: EscalationService) {}
 

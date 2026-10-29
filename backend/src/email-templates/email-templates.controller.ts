@@ -3,10 +3,13 @@ import { EmailTemplatesService, SYSTEM_NOTIFICATION_EVENTS } from './email-templ
 import { CreateEmailTemplateDto } from './dto/create-email-template.dto';
 import { UpdateEmailTemplateDto } from './dto/update-email-template.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { PortalGuard } from '../auth/guards/portal.guard';
+import { AdminPortalOnly } from '../auth/decorators/portal.decorator';
 import { GetUser } from '../auth/decorators/get-user.decorator';
 
 @Controller('email-templates')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PortalGuard)
+@AdminPortalOnly()
 export class EmailTemplatesController {
   constructor(private readonly emailTemplatesService: EmailTemplatesService) {}
 
@@ -32,6 +35,14 @@ export class EmailTemplatesController {
       throw new ForbiddenException('Only administrators can access system notification templates.');
     }
     return this.emailTemplatesService.findOne(id);
+  }
+
+  @Post('sync-defaults')
+  syncDefaults(@GetUser('role') role: string) {
+    if (role !== 'Admin') {
+      throw new ForbiddenException('Only administrators can synchronize default email templates.');
+    }
+    return this.emailTemplatesService.syncDefaultTemplates();
   }
 
   @Post()

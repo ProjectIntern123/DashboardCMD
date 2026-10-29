@@ -2,12 +2,15 @@ import { Controller, Get, Post, Put, Delete, Body, Param, UseGuards, HttpStatus,
 import { NotepadService } from './notepad.service';
 import { CreateNoteDto, UpdateNoteDto } from './dto/notepad.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { PortalGuard } from '../auth/guards/portal.guard';
 import { PermissionsGuard } from '../auth/guards/permissions.guard';
+import { UserPortalOnly } from '../auth/decorators/portal.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { GetUser } from '../auth/decorators/get-user.decorator';
 
 @Controller('notepad')
-@UseGuards(JwtAuthGuard, PermissionsGuard)
+@UseGuards(JwtAuthGuard, PortalGuard, PermissionsGuard)
+@UserPortalOnly()
 export class NotepadController {
   constructor(private readonly notepadService: NotepadService) {}
 

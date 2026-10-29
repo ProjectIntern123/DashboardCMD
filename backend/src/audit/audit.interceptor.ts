@@ -3,6 +3,13 @@ import { Observable } from 'rxjs';
 import { tap } from 'rxjs/operators';
 import { AuditService } from './audit.service';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  sanitizeAuditPayload,
+  BINARY_ATTACHMENT_OMITTED_MARKER,
+  REDACTED_MARKER,
+} from './audit-sanitizer';
+
+export { sanitizeAuditPayload, BINARY_ATTACHMENT_OMITTED_MARKER, REDACTED_MARKER };
 
 @Injectable()
 export class AuditInterceptor implements NestInterceptor {
@@ -60,21 +67,10 @@ export class AuditInterceptor implements NestInterceptor {
 
           const action = `${this.mapMethodToAction(method)} ${this.mapPathToResource(path)}`;
 
-          // Extract values to audit
-          let finalResponse = response;
-          if (response) {
-            finalResponse = JSON.parse(JSON.stringify(response));
-            // Remove sensitive fields
-            delete finalResponse.passwordHash;
-            delete finalResponse.mfaSecret;
-          }
-
-          let oldFiltered = oldValues;
-          if (oldValues) {
-            oldFiltered = JSON.parse(JSON.stringify(oldValues));
-            delete oldFiltered.passwordHash;
-            delete oldFiltered.mfaSecret;
-          }
+          // Extract values to audit safely without mutating original objects or persisting raw attachments
+          const oldFiltered = oldValues ? sanitizeAuditPayload(oldValues) : null;
+          const candidateNew = response !== undefined && response !== null ? response : req.body;
+          const newFiltered = candidateNew ? sanitizeAuditPayload(candidateNew) : null;
 
           await this.auditService.log({
             userId: activeUser.id,
@@ -85,7 +81,7 @@ export class AuditInterceptor implements NestInterceptor {
             ipAddress: ip,
             userAgent: ua,
             oldValues: oldFiltered,
-            newValues: finalResponse || req.body,
+            newValues: newFiltered,
           });
         } catch (e) {
           // Keep errors silent so request flow is unaffected

@@ -13,9 +13,49 @@ export class SettingsMailer {
   ) {}
 
   /**
+   * Evaluates whether outbound emails are disabled by environment safety configuration.
+   * Fails closed on explicit DISABLE_OUTBOUND_EMAILS=true or in staging mode.
+   * Database settings can NEVER override this safety control.
+   */
+  public isOutboundEmailDisabled(): boolean {
+    const rawDisable = (process.env.DISABLE_OUTBOUND_EMAILS || '').trim().toLowerCase();
+    if (rawDisable === 'true' || rawDisable === '1') {
+      return true;
+    }
+
+    // Fail closed in staging environments unless explicitly allowed
+    const appEnv = (process.env.APP_ENV || '').trim().toLowerCase();
+    const nodeEnv = (process.env.NODE_ENV || '').trim().toLowerCase();
+    const deployEnv = (process.env.DEPLOY_ENV || '').trim().toLowerCase();
+    const isStaging =
+      appEnv === 'staging' ||
+      nodeEnv === 'staging' ||
+      deployEnv === 'staging' ||
+      process.env.STAGING === 'true';
+
+    if (isStaging) {
+      const explicitAllow = (
+        process.env.ALLOW_OUTBOUND_EMAILS ||
+        process.env.ENABLE_STAGING_OUTBOUND_EMAILS ||
+        ''
+      ).trim().toLowerCase();
+      if (explicitAllow !== 'true' && explicitAllow !== '1') {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
    * Builds the Nodemailer transporter dynamically from current database settings or overrides.
    */
   private async getTransporter(overrides?: Record<string, string>) {
+    if (this.isOutboundEmailDisabled()) {
+      this.logger.warn('[Outbound Email Disabled] Transporter initialization suppressed by safety configuration.');
+      return null;
+    }
+
     const config = await this.settingsService.getAllSettings();
     
     // Merge database config with live form overrides (ignoring blank override passwords)
@@ -69,6 +109,14 @@ export class SettingsMailer {
    * Test connection using SMTP verification with optional live form overrides.
    */
   async testConnection(overrides?: Record<string, string>): Promise<{ success: boolean; message: string }> {
+    if (this.isOutboundEmailDisabled()) {
+      this.logger.warn('[Outbound Email Disabled] SMTP connection test suppressed by safety configuration.');
+      return {
+        success: false,
+        message: 'Outbound email and SMTP connection tests are disabled by safety configuration (DISABLE_OUTBOUND_EMAILS=true).',
+      };
+    }
+
     try {
       const transporter = await this.getTransporter(overrides);
       if (!transporter) {
@@ -93,12 +141,17 @@ export class SettingsMailer {
    */
   async sendEmail(to: string, subject: string, text: string, html?: string, overrides?: Record<string, string>): Promise<boolean> {
     try {
+      if (this.isOutboundEmailDisabled()) {
+        this.logger.warn('[Outbound Email Disabled] Outgoing email suppressed by safety configuration.');
+        return false;
+      }
+
       const config = await this.settingsService.getAllSettings();
       const merged = { ...config, ...overrides };
       const transporter = await this.getTransporter(overrides);
 
       if (!transporter) {
-        this.logger.warn(`[Local Logs Fallback] Recipient: ${to} | Subject: ${subject} | Body: ${text}`);
+        this.logger.warn('[Local Logs Fallback] SMTP credentials not configured. Outgoing email skipped.');
         return false;
       }
 
@@ -119,10 +172,10 @@ export class SettingsMailer {
         html: html || text.replace(/\n/g, '<br>'),
       });
 
-      this.logger.log(`SMTP Email successfully sent to ${to}`);
+      this.logger.log('SMTP Email successfully sent.');
       return true;
     } catch (e: any) {
-      this.logger.error(`Failed to send email to ${to}: ${e.message}`);
+      this.logger.error(`Failed to send email: ${e.message}`);
       return false;
     }
   }
@@ -138,6 +191,11 @@ export class SettingsMailer {
     defaultText?: string,
     overrides?: Record<string, string>,
   ): Promise<boolean> {
+    if (this.isOutboundEmailDisabled()) {
+      this.logger.warn(`[Outbound Email Disabled] Template email dispatch for event "${eventKey}" suppressed by safety configuration.`);
+      return false;
+    }
+
     let subject = defaultSubject || '';
     let text = defaultText || '';
 

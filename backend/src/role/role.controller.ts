@@ -1,10 +1,13 @@
 import { Controller, Get, Post, Put, Delete, Body, Param, UseGuards, ForbiddenException } from '@nestjs/common';
 import { RoleService } from './role.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { PortalGuard } from '../auth/guards/portal.guard';
+import { AdminPortalOnly } from '../auth/decorators/portal.decorator';
 import { GetUser } from '../auth/decorators/get-user.decorator';
 
 @Controller('roles')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PortalGuard)
+@AdminPortalOnly()
 export class RoleController {
   constructor(private readonly roleService: RoleService) {}
 

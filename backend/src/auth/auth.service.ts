@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, ForbiddenException, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, UnauthorizedException, ForbiddenException, NotFoundException, BadRequestException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { LoginDto } from './dto/login.dto';
@@ -12,6 +12,8 @@ import { SettingsService } from '../settings/settings.service';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private prisma: PrismaService,
     private jwtService: JwtService,
@@ -98,8 +100,8 @@ export class AuthService {
           },
         );
 
-        // SIMULATION ONLY: Log OTP code in backend console for developer visibility
-        console.log(`[MFA OTP SENT] User: ${user.email} | Code: ${otpCode} | Expires: 5 mins`);
+        // Record operational challenge log without exposing OTP secret or email PII
+        this.logger.log(`[MFA OTP SENT] User ID: ${user.id} | Challenge initiated | Expires: 5 mins`);
 
         return {
           mfaRequired: true,
@@ -176,8 +178,10 @@ export class AuthService {
 
     // Save refreshToken session in DB
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
-    await this.prisma.session.create({
-      data: {
+    await this.prisma.session.upsert({
+      where: { token: refreshToken },
+      update: { expiresAt },
+      create: {
         userId: payload.sub,
         token: refreshToken,
         expiresAt,
@@ -269,10 +273,13 @@ export class AuthService {
       where: { email: forgotPasswordDto.email },
     });
 
+    const publicMessage = 'If the email address is registered, a password reset OTP code and verification link have been sent.';
+
     // Uniform response regardless of email existence to prevent user enumeration
     if (!user || user.deletedAt) {
       return {
-        message: 'If the email address is registered, a password reset OTP code and verification link have been sent.',
+        success: true,
+        message: publicMessage,
       };
     }
 
@@ -324,15 +331,30 @@ export class AuthService {
       },
     );
 
-    console.log(`[PASSWORD RESET OTP] User: ${user.email} | Code: ${otpCode} | Sent: ${emailSent} | Expires: 15 mins`);
+    // Record operational reset challenge without exposing OTP secret or email PII
+    this.logger.log(`[PASSWORD RESET OTP] User ID: ${user.id} | Challenge initiated | Sent: ${emailSent} | Expires: 15 mins`);
+
+    // Strictly restrict devOtp to local development environments only.
+    // In staging or production, devOtp is NEVER returned, even when email delivery is suppressed.
+    const appEnv = (process.env.APP_ENV || '').trim().toLowerCase();
+    const nodeEnv = (process.env.NODE_ENV || '').trim().toLowerCase();
+    const deployEnv = (process.env.DEPLOY_ENV || '').trim().toLowerCase();
+    const isStaging =
+      appEnv === 'staging' ||
+      nodeEnv === 'staging' ||
+      deployEnv === 'staging' ||
+      process.env.STAGING === 'true';
+
+    const isLocalDev =
+      nodeEnv === 'development' &&
+      !isStaging &&
+      appEnv !== 'production' &&
+      deployEnv !== 'production';
 
     return {
       success: true,
-      emailSent,
-      devOtp: !emailSent || process.env.NODE_ENV !== 'production' ? otpCode : undefined,
-      message: emailSent
-        ? 'A password reset OTP code and verification link have been sent to your email.'
-        : `Password reset OTP generated (${otpCode}). (Note: Email delivery failed due to unconfigured SMTP settings).`,
+      devOtp: isLocalDev ? otpCode : undefined,
+      message: publicMessage,
     };
   }
 
@@ -383,8 +405,8 @@ export class AuthService {
           login_url: `${frontendUrl}/login`,
         },
       );
-    } catch (err) {
-      console.error('[PASSWORD CHANGED EMAIL ERROR]', err);
+    } catch (err: any) {
+      this.logger.error(`[PASSWORD CHANGED EMAIL ERROR] ${err?.message || err}`);
     }
 
     return {
@@ -425,8 +447,8 @@ export class AuthService {
           login_url: `${frontendUrl}/login`,
         },
       );
-    } catch (err) {
-      console.error('[PASSWORD CHANGED EMAIL ERROR]', err);
+    } catch (err: any) {
+      this.logger.error(`[PASSWORD CHANGED EMAIL ERROR] ${err?.message || err}`);
     }
 
     return {
@@ -448,7 +470,7 @@ export class AuthService {
       const lockoutMinutes = 15;
       lockedUntil = new Date(Date.now() + lockoutMinutes * 60000);
       message = `Account temporarily locked for ${lockoutMinutes} mins after ${maxAttempts} consecutive failures.`;
-      console.warn(`[ACCOUNT LOCKED] Locked user: ${user.email} from IP: ${ipAddress}`);
+      this.logger.warn(`[ACCOUNT LOCKED] Locked user ID: ${user.id} from IP: ${ipAddress}`);
     }
 
     await this.prisma.user.update({

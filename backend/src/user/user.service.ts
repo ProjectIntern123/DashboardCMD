@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as bcrypt from 'bcrypt';
 import { SettingsMailer } from '../settings/settings.mailer';
@@ -6,6 +6,8 @@ import { SettingsService } from '../settings/settings.service';
 
 @Injectable()
 export class UserService {
+  private readonly logger = new Logger(UserService.name);
+
   constructor(
     private prisma: PrismaService,
     private settingsMailer: SettingsMailer,
@@ -13,7 +15,7 @@ export class UserService {
   ) { }
 
   async findAll(actorRole: string) {
-    const isSystemAdmin = actorRole === 'Admin' || actorRole === 'CMD';
+    const isSystemAdmin = actorRole === 'Admin';
 
     const where: any = {};
 
@@ -110,9 +112,9 @@ export class UserService {
           date_time: dateTimeStr,
         },
       );
-      console.log(`[USER CREATION EMAIL] Sent credentials to ${user.email}`);
-    } catch (err) {
-      console.error(`[USER CREATION EMAIL ERROR] Failed to send email:`, err);
+      this.logger.log(`[USER CREATION EMAIL] Onboarding notification processed for user ID: ${user.id}`);
+    } catch (err: any) {
+      this.logger.error(`[USER CREATION EMAIL ERROR] Failed to send email: ${err?.message || err}`);
     }
 
     return user;
@@ -235,8 +237,8 @@ export class UserService {
             },
           );
         }
-      } catch (err) {
-        console.error('[ACCOUNT STATUS CHANGE EMAIL ERROR]', err);
+      } catch (err: any) {
+        this.logger.error(`[ACCOUNT STATUS CHANGE EMAIL ERROR] ${err?.message || err}`);
       }
     }
 
@@ -284,15 +286,15 @@ export class UserService {
       },
     );
 
-    console.log(`[TEMP PASSWORD RESET] User: ${user.email} | Key: ${tempPassword}`);
+    this.logger.log(`[TEMP PASSWORD RESET] Temporary password generated for user ID: ${user.id} | Sent: ${emailSent}`);
 
     return {
       success: true,
       tempPassword,
       emailSent,
       message: emailSent
-        ? `Temporary password (${tempPassword}) generated and emailed to ${user.email}.`
-        : `Temporary password generated: "${tempPassword}". (Note: Email delivery failed due to SMTP settings. Please share this key manually.)`
+        ? `Temporary password generated and emailed to ${user.email}.`
+        : 'Temporary password generated. (Note: Email delivery failed due to SMTP settings. Please share this key manually).'
     };
   }
 

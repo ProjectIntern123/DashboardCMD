@@ -1,19 +1,30 @@
 import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { SettingsService } from '../settings/settings.service';
+import { RecipientValidator } from '../common/utils/recipient-validator';
 import { CreateTaskDto, UpdateTaskDto, UpdateTaskProgressDto } from './dto/task.dto';
 
 @Injectable()
 export class TaskService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private settingsService: SettingsService,
+    private recipientValidator: RecipientValidator,
+  ) {}
 
   async create(createTaskDto: any, userId: string, roleName: string) {
     const { attachments, ...data } = createTaskDto;
-    const batchId = Math.random().toString(36).substring(2, 10);
-    const createdTasks = [];
+
+    if (attachments && attachments.length > 0) {
+      await this.settingsService.validateAttachmentSizes(attachments);
+    }
+
+    // Atomic pre-write validation: validates format, existence, and rejects Admin accounts
+    const validatedIds = await this.recipientValidator.validateInternalUserIds(data.assigneeIds);
 
     const isSystemAdmin = roleName === 'Admin' || roleName === 'CMD';
-    for (const assigneeId of data.assigneeIds) {
-      if (!isSystemAdmin) {
+    if (!isSystemAdmin) {
+      for (const assigneeId of validatedIds) {
         const assigneeUser = await this.prisma.user.findUnique({
           where: { id: assigneeId },
         });
@@ -23,36 +34,41 @@ export class TaskService {
       }
     }
 
-    for (const assigneeId of data.assigneeIds) {
-      const task = await this.prisma.task.create({
-        data: {
-          batchId,
-          title: data.title,
-          detail: data.detail || null,
-          assigneeId,
-          assignedById: userId,
-          pri: data.pri,
-          due: data.due || null,
-          st: data.st,
-          cd: data.cd || null,
-          note: data.note || null,
-          attachments: {
-            create: attachments?.map((att: any) => ({
-              name: att.name,
-              type: att.type,
-              size: att.size,
-              data: att.data,
-            })) || [],
-          },
-        },
-        include: {
-          attachments: true,
-        },
-      });
-      createdTasks.push(task);
-    }
+    const batchId = Math.random().toString(36).substring(2, 10);
 
-    return createdTasks;
+    // Atomic multi-row transaction prevents partial writes
+    return this.prisma.$transaction(async (tx) => {
+      const createdTasks = [];
+      for (const assigneeId of validatedIds) {
+        const task = await tx.task.create({
+          data: {
+            batchId,
+            title: data.title,
+            detail: data.detail || null,
+            assigneeId,
+            assignedById: userId,
+            pri: data.pri,
+            due: data.due || null,
+            st: data.st,
+            cd: data.cd || null,
+            note: data.note || null,
+            attachments: {
+              create: attachments?.map((att: any) => ({
+                name: att.name,
+                type: att.type,
+                size: att.size,
+                data: att.data,
+              })) || [],
+            },
+          },
+          include: {
+            attachments: true,
+          },
+        });
+        createdTasks.push(task);
+      }
+      return createdTasks;
+    });
   }
 
   async findAll(userId: string, roleName: string, filters: { search?: string; pri?: string; st?: string; assigneeId?: string }) {
@@ -147,6 +163,9 @@ export class TaskService {
     });
 
     const newAttachments = attachments?.filter((a: any) => !a.id) || [];
+    if (newAttachments.length > 0) {
+      await this.settingsService.validateAttachmentSizes(newAttachments);
+    }
 
     return this.prisma.task.update({
       where: { id },

@@ -5,7 +5,6 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '../context/AuthContext';
 import { api, getApiBaseUrl } from '../lib/api';
 import { ProjectsTab } from './components/ProjectsTab';
-import { TasksTab } from './components/TasksTab';
 
 interface PersonalNoteInnerProps {
   tabName: string;
@@ -266,7 +265,6 @@ export default function DashboardPage() {
   const [noteSearchQuery, setNoteSearchQuery] = useState('');
   const [noteSortOrder, setNoteSortOrder] = useState<'edited-desc' | 'title'>('edited-desc');
 
-
   // Detail Modal states
   const [selectedProject, setSelectedProject] = useState<any | null>(null);
   const [selectedMeeting, setSelectedMeeting] = useState<any | null>(null);
@@ -280,6 +278,76 @@ export default function DashboardPage() {
   useEffect(() => {
     setActiveDetailTab('details');
   }, [selectedProject, selectedMeeting, selectedTask, selectedAction, selectedEscalation, selectedFollowup, selectedLegal]);
+
+  // Action remarks channels state
+  const [actionRemarks, setActionRemarks] = useState<{ userRemarks: any[]; cmdRemarks: any[]; legacyRemark?: string } | null>(null);
+  const [isLoadingRemarks, setIsLoadingRemarks] = useState(false);
+  const [newUserRemarkText, setNewUserRemarkText] = useState('');
+  const [isSubmittingUserRemark, setIsSubmittingUserRemark] = useState(false);
+  const [newCmdRemarkText, setNewCmdRemarkText] = useState('');
+  const [isSubmittingCmdRemark, setIsSubmittingCmdRemark] = useState(false);
+
+  useEffect(() => {
+    if (selectedAction?.id) {
+      setIsLoadingRemarks(true);
+      setNewUserRemarkText('');
+      setNewCmdRemarkText('');
+      api.get(`/action-items/${selectedAction.id}/remarks`)
+        .then((res: any) => {
+          setActionRemarks(res);
+        })
+        .catch(() => {
+          setActionRemarks(null);
+        })
+        .finally(() => {
+          setIsLoadingRemarks(false);
+        });
+    } else {
+      setActionRemarks(null);
+    }
+  }, [selectedAction?.id]);
+
+  const handleAddUserRemark = async () => {
+    if (!selectedAction?.id || !newUserRemarkText.trim() || isSubmittingUserRemark) return;
+    setIsSubmittingUserRemark(true);
+    try {
+      const created = await api.post(`/action-items/${selectedAction.id}/remarks`, {
+        text: newUserRemarkText.trim(),
+        channel: 'USER',
+      });
+      setActionRemarks((prev: any) => ({
+        ...prev,
+        userRemarks: [...(prev?.userRemarks || []), created],
+      }));
+      setNewUserRemarkText('');
+      showToast('User remark posted successfully', 'ok');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to post remark', 'err');
+    } finally {
+      setIsSubmittingUserRemark(false);
+    }
+  };
+
+  const handleAddCmdRemark = async () => {
+    if (!selectedAction?.id || !newCmdRemarkText.trim() || isSubmittingCmdRemark) return;
+    setIsSubmittingCmdRemark(true);
+    try {
+      const created = await api.post(`/action-items/${selectedAction.id}/remarks`, {
+        text: newCmdRemarkText.trim(),
+        channel: 'CMD',
+      });
+      setActionRemarks((prev: any) => ({
+        ...prev,
+        cmdRemarks: [...(prev?.cmdRemarks || []), created],
+      }));
+      setNewCmdRemarkText('');
+      showToast('CMD directive posted successfully', 'ok');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to post CMD remark', 'err');
+    } finally {
+      setIsSubmittingCmdRemark(false);
+    }
+  };
 
   // Form Modal Edit/Add states
   const [openModalId, setOpenModalId] = useState<string | null>(null);
@@ -520,6 +588,10 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (user) {
+      if (user.role === 'Admin') {
+        router.push('/admin');
+        return;
+      }
       fetchMasterData();
       refreshAllData();
       triggerClock();
@@ -825,7 +897,32 @@ export default function DashboardPage() {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    Array.from(files).forEach(file => {
+    const maxMb = parseInt(branding?.max_attachment_size_mb || '10', 10);
+    const maxBytes = maxMb * 1024 * 1024;
+    const rawSafeCeilingBytes = 35 * 1024 * 1024; // 35 MB raw file produces ~47 MB Base64 payload, fitting 50 MB server body
+
+    const fileList = Array.from(files);
+    const totalBatchBytes = fileList.reduce((acc, f) => acc + f.size, 0);
+
+    if (fileList.length > 1 && totalBatchBytes > rawSafeCeilingBytes) {
+      const batchMb = (totalBatchBytes / (1024 * 1024)).toFixed(1);
+      showToast(`Selected files total ${batchMb} MB, which exceeds the 35 MB raw ceiling for request payloads (bounded by the 50 MB server body limit). Please attach fewer or smaller files at once.`, 'err');
+      return;
+    }
+
+    fileList.forEach(file => {
+      if (file.size > maxBytes) {
+        const fileMb = (file.size / (1024 * 1024)).toFixed(1);
+        showToast(`"${file.name}" exceeds the configured maximum permitted attachment size of ${maxMb} MB (${fileMb} MB)`, 'err');
+        return;
+      }
+
+      if (file.size > rawSafeCeilingBytes) {
+        const fileMb = (file.size / (1024 * 1024)).toFixed(1);
+        showToast(`"${file.name}" (${fileMb} MB) exceeds the 35 MB raw ceiling for Base64 inline attachments (server 50 MB limit). Files >35 MB require infrastructure streaming configuration.`, 'err');
+        return;
+      }
+
       const reader = new FileReader();
       reader.onload = () => {
         const base64Data = reader.result as string;
@@ -1042,6 +1139,22 @@ export default function DashboardPage() {
     if (!files || files.length === 0) return;
 
     const file = files[0];
+    const maxMb = parseInt(branding?.max_attachment_size_mb || '10', 10);
+    const maxBytes = maxMb * 1024 * 1024;
+    const rawSafeCeilingBytes = 35 * 1024 * 1024; // 35 MB raw file produces ~47 MB Base64 payload, fitting 50 MB server body
+
+    if (file.size > maxBytes) {
+      const fileMb = (file.size / (1024 * 1024)).toFixed(1);
+      showToast(`"${file.name}" exceeds the configured maximum permitted attachment size of ${maxMb} MB (${fileMb} MB)`, 'err');
+      return;
+    }
+
+    if (file.size > rawSafeCeilingBytes) {
+      const fileMb = (file.size / (1024 * 1024)).toFixed(1);
+      showToast(`"${file.name}" (${fileMb} MB) exceeds the 35 MB raw ceiling for Base64 inline attachments (server 50 MB limit). Files >35 MB require infrastructure streaming configuration.`, 'err');
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = async () => {
       const base64Data = reader.result as string;
@@ -1076,6 +1189,22 @@ export default function DashboardPage() {
     if (!files || files.length === 0) return;
 
     const file = files[0];
+    const maxMb = parseInt(branding?.max_attachment_size_mb || '10', 10);
+    const maxBytes = maxMb * 1024 * 1024;
+    const infraMaxBytes = 50 * 1024 * 1024; // 50 MB Express/Nginx body limit for multipart binary uploads
+
+    if (file.size > maxBytes) {
+      const fileMb = (file.size / (1024 * 1024)).toFixed(1);
+      showToast(`"${file.name}" exceeds the configured maximum permitted file size of ${maxMb} MB (${fileMb} MB)`, 'err');
+      return;
+    }
+
+    if (file.size > infraMaxBytes) {
+      const fileMb = (file.size / (1024 * 1024)).toFixed(1);
+      showToast(`"${file.name}" (${fileMb} MB) exceeds the 50 MB server infrastructure limit (Nginx client_max_body_size).`, 'err');
+      return;
+    }
+
     showToast(`Uploading Legal MIS sheet (${mode === 'smartSync' ? 'Smart Sync' : 'Full Replace'})...`, '');
 
     const formData = new FormData();
@@ -1230,50 +1359,6 @@ export default function DashboardPage() {
     }
   };
 
-  const handleFormat = (type: 'bold' | 'italic' | 'underline' | 'list') => {
-    const ta = document.getElementById('np-editor-textarea') as HTMLTextAreaElement;
-    if (!ta) return;
-
-    const start = ta.selectionStart;
-    const end = ta.selectionEnd;
-    const text = ta.value;
-    const selected = text.substring(start, end);
-
-    let replacement = '';
-    let offset = 0;
-    if (type === 'bold') {
-      replacement = `**${selected || 'bold text'}**`;
-      offset = selected ? 0 : 2;
-    } else if (type === 'italic') {
-      replacement = `*${selected || 'italic text'}*`;
-      offset = selected ? 0 : 1;
-    } else if (type === 'underline') {
-      replacement = `<u>${selected || 'underlined text'}</u>`;
-      offset = selected ? 0 : 3;
-    } else if (type === 'list') {
-      replacement = selected
-        ? selected.split('\n').map(line => line.startsWith('- ') ? line : `- ${line}`).join('\n')
-        : '- List item';
-    }
-
-    const newText = text.substring(0, start) + replacement + text.substring(end);
-    setNoteTextInput(newText);
-
-    if (activeNoteId) {
-      setNotes(prev => prev.map(n => n.id === activeNoteId ? { ...n, text: newText, ts: new Date().toISOString() } : n));
-      api.put(`/notepad/${activeNoteId}`, { title: noteTitleInput, text: newText });
-    }
-
-    setTimeout(() => {
-      ta.focus();
-      if (selected) {
-        ta.setSelectionRange(start, start + replacement.length);
-      } else {
-        const cursor = start + offset;
-        ta.setSelectionRange(cursor, cursor + (type === 'list' ? 9 : 4));
-      }
-    }, 50);
-  };
 
 
 
@@ -1495,7 +1580,7 @@ export default function DashboardPage() {
     );
   }
 
-  if (!user) {
+  if (!user || user.role === 'Admin') {
     return null;
   }
 
@@ -1581,13 +1666,12 @@ export default function DashboardPage() {
       return usersList.filter((u: any) => 
         u.id !== user.id && 
         u.active !== false && 
-        !u.immuneFromEscalation &&
         (u.role?.name === 'Manager' || u.role?.name === 'Employee' || u.role === 'Manager' || u.role === 'Employee')
       );
     } else if (isAdmin) {
-      return usersList.filter((u: any) => u.id !== user.id && u.active !== false && !u.immuneFromEscalation);
+      return usersList.filter((u: any) => u.id !== user.id && u.active !== false);
     } else {
-      return usersList.filter((u: any) => u.managerId === user.id && u.active !== false && !u.immuneFromEscalation);
+      return usersList.filter((u: any) => u.managerId === user.id && u.active !== false);
     }
   };
 
@@ -1936,7 +2020,23 @@ export default function DashboardPage() {
                       <div className="pdot dot-r" />
                       <div>
                         <strong>{a.own}</strong>: {a.item.slice(0, 65)}{a.item.length > 65 ? '...' : ''}
-                        <div style={{ fontSize: '11px', color: '#888' }}>Due {fd(a.due)} · {a.dept}</div>
+                        <div style={{ fontSize: '11px', color: '#888', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px', flexWrap: 'wrap' }}>
+                          <span>Due {fd(a.due)} · {a.dept}</span>
+                          <span style={{
+                            fontSize: '10px',
+                            background: a.creator?.name ? '#f1f5f9' : '#f8fafc',
+                            color: a.creator?.name ? '#475569' : '#94a3b8',
+                            padding: '1px 5px',
+                            borderRadius: '4px',
+                            fontWeight: 500,
+                            border: '1px solid #e2e8f0',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '3px',
+                          }}>
+                            👤 {a.creator?.name || 'Legacy record'}
+                          </span>
+                        </div>
                       </div>
                     </div>
                   ))
@@ -2619,7 +2719,25 @@ export default function DashboardPage() {
                             <div className="act-source-cell">{a.meetingName || 'Directives'}</div>
                             <div className="act-source-sub">{a.meetingDate}</div>
                           </td>
-                          <td style={{ fontWeight: 600 }}>{a.own}</td>
+                          <td>
+                            <div style={{ fontWeight: 600 }}>{a.own}</div>
+                            <div style={{ marginTop: '2px' }}>
+                              <span style={{
+                                fontSize: '10px',
+                                background: a.creator?.name ? '#f1f5f9' : '#f8fafc',
+                                color: a.creator?.name ? '#475569' : '#94a3b8',
+                                padding: '1px 5px',
+                                borderRadius: '4px',
+                                fontWeight: 500,
+                                border: '1px solid #e2e8f0',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '3px',
+                              }}>
+                                👤 {a.creator?.name || 'Legacy record'}
+                              </span>
+                            </div>
+                          </td>
                           <td style={{ color: '#666' }}>{a.dept || '—'}</td>
                           <td>
                             <button
@@ -3255,7 +3373,7 @@ export default function DashboardPage() {
                           onClick={() => {
                             setActiveNoteId(n.id);
                             setNoteTitleInput(n.title);
-                            setNoteTextInput(n.text || '');
+                            setNoteTextInput((n.text || '').replace(/<!-- item_id: [a-f0-9-]+ -->/g, ''));
                           }}
                           style={{
                             padding: '12px',
@@ -3327,7 +3445,8 @@ export default function DashboardPage() {
                         className="btn-add"
                         onClick={async () => {
                           try {
-                            await api.put(`/notepad/${activeNoteId}`, { title: noteTitleInput, text: noteTextInput });
+                            const fullText = getFullNoteTextWithComment(activeNoteId, noteTextInput);
+                            await api.put(`/notepad/${activeNoteId}`, { title: noteTitleInput, text: fullText });
                             showToast('Note saved manually', 'ok');
                             const label = document.getElementById('np-autosave-label');
                             if (label) label.textContent = `Saved at ${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}`;
@@ -3346,44 +3465,6 @@ export default function DashboardPage() {
                       >
                         🗑️ Delete
                       </button>
-                    </div>
-
-                    {/* Formatting Toolbar */}
-                    <div className="formatting-toolbar" style={{ display: 'flex', gap: '6px', padding: '8px 12px', background: '#f8f9fa', borderRadius: '8px', border: '1px solid var(--border)', marginBottom: '12px', alignItems: 'center' }}>
-                      <button
-                        type="button"
-                        onMouseDown={(e) => { e.preventDefault(); handleFormat('bold'); }}
-                        title="Bold"
-                        style={{ padding: '4px 8px', fontSize: '12px', fontWeight: 'bold', background: '#fff', border: '1px solid #d1d5db', borderRadius: '4px', cursor: 'pointer' }}
-                      >
-                        B
-                      </button>
-                      <button
-                        type="button"
-                        onMouseDown={(e) => { e.preventDefault(); handleFormat('italic'); }}
-                        title="Italic"
-                        style={{ padding: '4px 8px', fontSize: '12px', fontStyle: 'italic', background: '#fff', border: '1px solid #d1d5db', borderRadius: '4px', cursor: 'pointer' }}
-                      >
-                        I
-                      </button>
-                      <button
-                        type="button"
-                        onMouseDown={(e) => { e.preventDefault(); handleFormat('underline'); }}
-                        title="Underline"
-                        style={{ padding: '4px 8px', fontSize: '12px', textDecoration: 'underline', background: '#fff', border: '1px solid #d1d5db', borderRadius: '4px', cursor: 'pointer' }}
-                      >
-                        U
-                      </button>
-                      <button
-                        type="button"
-                        onMouseDown={(e) => { e.preventDefault(); handleFormat('list'); }}
-                        title="Bullet List"
-                        style={{ padding: '4px 8px', fontSize: '12px', background: '#fff', border: '1px solid #d1d5db', borderRadius: '4px', cursor: 'pointer' }}
-                      >
-                        • List
-                      </button>
-                      <div style={{ height: '16px', width: '1px', background: '#cbd5e1', margin: '0 4px' }} />
-                      <span style={{ fontSize: '11px', color: 'var(--muted)' }}>Helper formatting tools</span>
                     </div>
 
                     <input
@@ -3411,26 +3492,31 @@ export default function DashboardPage() {
                     {/* Textarea Editor */}
                     <textarea
                       id="np-editor-textarea"
-                      placeholder="Begin drafting private notepad transcripts. Selected helper formatting triggers will wrap text selection..."
-                      value={noteTextInput.replace(/<!-- item_id: [a-f0-9-]+ -->/g, '')}
+                      placeholder="Type your private notes here..."
+                      value={noteTextInput}
                       onChange={e => {
                         const userInput = e.target.value;
-                        const commentMatch = noteTextInput.match(/<!-- item_id: [a-f0-9-]+ -->/);
-                        const comment = commentMatch ? `\n${commentMatch[0]}` : '';
-                        const fullText = userInput + comment;
-                        handleNotepadChange(fullText);
+                        setNoteTextInput(userInput);
+                        const fullText = getFullNoteTextWithComment(activeNoteId, userInput);
+                        setNotes(prev => prev.map(n => n.id === activeNoteId ? { ...n, text: fullText, ts: new Date().toISOString() } : n));
+                        triggerAutosave();
                       }}
                       style={{
                         flex: 1,
-                        minHeight: '380px',
-                        padding: '12px',
+                        width: '100%',
+                        minHeight: '420px',
+                        padding: '16px',
                         border: '1px solid var(--border)',
                         borderRadius: '8px',
                         fontSize: '14px',
                         fontFamily: 'var(--font)',
                         lineHeight: '1.6',
                         resize: 'none',
-                        outline: 'none'
+                        outline: 'none',
+                        boxSizing: 'border-box',
+                        color: 'var(--text)',
+                        background: '#fff',
+                        cursor: 'text'
                       }}
                     />
 
@@ -4086,6 +4172,25 @@ export default function DashboardPage() {
                         <div className="cdm-field-label">Department / Business Unit</div>
                         <div className="cdm-field-value">{selectedAction.dept || '—'}</div>
                       </div>
+                      <div className="cdm-field">
+                        <div className="cdm-field-label">Created By</div>
+                        <div className="cdm-field-value">
+                          <span style={{
+                            fontSize: '11px',
+                            background: selectedAction.creator?.name ? '#f1f5f9' : '#f8fafc',
+                            color: selectedAction.creator?.name ? '#334155' : '#94a3b8',
+                            padding: '2px 8px',
+                            borderRadius: '4px',
+                            fontWeight: 600,
+                            border: '1px solid #e2e8f0',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                          }}>
+                            👤 {selectedAction.creator?.name || 'Legacy record'}
+                          </span>
+                        </div>
+                      </div>
                     </div>
                     <div className="cdm-row">
                       <div className="cdm-field">
@@ -4119,9 +4224,181 @@ export default function DashboardPage() {
                         </div>
                       </div>
                     </div>
-                    <div className="cdm-field">
-                      <div className="cdm-field-label">Action Status Remarks</div>
-                      <div className="cdm-field-value preformatted">{selectedAction.rem || 'No updates logged.'}</div>
+
+                    {/* SEPARATE REMARK CHANNELS: User Remarks and CMD Remarks */}
+                    <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                      {/* CHANNEL 1: CMD Remarks */}
+                      <div style={{
+                        border: '1px solid #fed7aa',
+                        background: '#fffaf5',
+                        borderRadius: '8px',
+                        padding: '12px 14px',
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontSize: '13px', fontWeight: 700, color: '#c2410c' }}>👑 CMD Remarks</span>
+                            <span style={{ fontSize: '10px', background: '#ffedd5', color: '#9a3412', padding: '1px 6px', borderRadius: '4px', fontWeight: 600 }}>
+                              Directives & Guidance
+                            </span>
+                          </div>
+                          {isCMD ? (
+                            <span style={{ fontSize: '11px', color: '#ea580c', fontWeight: 600 }}>Executive Authorization</span>
+                          ) : (
+                            <span style={{ fontSize: '11px', color: '#9a3412', fontStyle: 'italic' }}>🔒 Read-only</span>
+                          )}
+                        </div>
+
+                        {/* List of CMD remarks */}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {isLoadingRemarks ? (
+                            <div style={{ fontSize: '12px', color: '#9a3412', fontStyle: 'italic' }}>Loading remarks...</div>
+                          ) : (!actionRemarks?.cmdRemarks || actionRemarks.cmdRemarks.length === 0) ? (
+                            <div style={{ fontSize: '12px', color: '#9a3412', fontStyle: 'italic' }}>No CMD directives logged.</div>
+                          ) : (
+                            actionRemarks.cmdRemarks.map((rem: any) => (
+                              <div key={rem.id} style={{
+                                background: '#ffffff',
+                                border: '1px solid #fed7aa',
+                                borderRadius: '6px',
+                                padding: '8px 12px',
+                              }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                    <span style={{ fontSize: '11px', fontWeight: 700, background: '#f97316', color: '#fff', padding: '1px 6px', borderRadius: '4px' }}>
+                                      {rem.author?.name || 'CMD Office'}
+                                    </span>
+                                    <span style={{ fontSize: '10px', color: '#9a3412' }}>{rem.author?.role || 'CMD'}</span>
+                                  </div>
+                                  <span style={{ fontSize: '11px', color: '#7c2d12' }}>
+                                    {new Date(rem.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+                                  </span>
+                                </div>
+                                <div style={{ fontSize: '13px', color: '#1c1917', whiteSpace: 'pre-wrap', lineHeight: 1.4 }}>
+                                  {rem.text}
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+
+                        {/* CMD Remark Composer (strictly rendered for CMD user) */}
+                        {isCMD && (
+                          <div style={{ marginTop: '10px' }}>
+                            <textarea
+                              placeholder="Add an official CMD directive or guidance..."
+                              value={newCmdRemarkText}
+                              onChange={(e) => setNewCmdRemarkText(e.target.value)}
+                              rows={2}
+                              style={{ width: '100%', padding: '8px', fontSize: '12px', borderRadius: '6px', border: '1px solid #fdba74', resize: 'vertical' }}
+                            />
+                            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '6px' }}>
+                              <button
+                                type="button"
+                                className="btn-sm"
+                                style={{ background: '#ea580c', color: '#fff', border: 'none', borderRadius: '4px', padding: '4px 12px', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}
+                                disabled={!newCmdRemarkText.trim() || isSubmittingCmdRemark}
+                                onClick={handleAddCmdRemark}
+                              >
+                                {isSubmittingCmdRemark ? 'Posting...' : 'Post CMD Remark'}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* CHANNEL 2: User Remarks */}
+                      <div style={{
+                        border: '1px solid #e2e8f0',
+                        background: '#f8fafc',
+                        borderRadius: '8px',
+                        padding: '12px 14px',
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontSize: '13px', fontWeight: 700, color: '#334155' }}>💬 User Remarks</span>
+                            <span style={{ fontSize: '10px', background: '#e2e8f0', color: '#475569', padding: '1px 6px', borderRadius: '4px', fontWeight: 600 }}>
+                              Execution Updates
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* List of User remarks */}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {/* Historical legacy remark if present */}
+                          {(actionRemarks?.legacyRemark || selectedAction.rem) && (
+                            <div style={{
+                              background: '#ffffff',
+                              border: '1px solid #e2e8f0',
+                              borderRadius: '6px',
+                              padding: '8px 12px',
+                            }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                                <span style={{ fontSize: '10px', fontWeight: 600, background: '#f1f5f9', color: '#64748b', padding: '1px 6px', borderRadius: '4px' }}>
+                                  🏛️ Legacy record
+                                </span>
+                                <span style={{ fontSize: '11px', color: '#94a3b8' }}>Original Log</span>
+                              </div>
+                              <div style={{ fontSize: '13px', color: '#334155', whiteSpace: 'pre-wrap', lineHeight: 1.4 }}>
+                                {actionRemarks?.legacyRemark || selectedAction.rem}
+                              </div>
+                            </div>
+                          )}
+
+                          {isLoadingRemarks ? (
+                            <div style={{ fontSize: '12px', color: '#64748b', fontStyle: 'italic' }}>Loading remarks...</div>
+                          ) : (!actionRemarks?.userRemarks || actionRemarks.userRemarks.length === 0) && !selectedAction.rem ? (
+                            <div style={{ fontSize: '12px', color: '#64748b', fontStyle: 'italic' }}>No user updates logged.</div>
+                          ) : (
+                            actionRemarks?.userRemarks?.map((rem: any) => (
+                              <div key={rem.id} style={{
+                                background: '#ffffff',
+                                border: '1px solid #e2e8f0',
+                                borderRadius: '6px',
+                                padding: '8px 12px',
+                              }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                    <span style={{ fontSize: '11px', fontWeight: 600, background: '#e0e7ff', color: '#3730a3', padding: '1px 6px', borderRadius: '4px' }}>
+                                      {rem.author?.name || 'Team Member'}
+                                    </span>
+                                    <span style={{ fontSize: '10px', color: '#64748b' }}>{rem.author?.role || 'User'}</span>
+                                  </div>
+                                  <span style={{ fontSize: '11px', color: '#64748b' }}>
+                                    {new Date(rem.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+                                  </span>
+                                </div>
+                                <div style={{ fontSize: '13px', color: '#334155', whiteSpace: 'pre-wrap', lineHeight: 1.4 }}>
+                                  {rem.text}
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+
+                        {/* User Remark Composer */}
+                        {hasPermission('Edit', 'Actions') && (
+                          <div style={{ marginTop: '10px' }}>
+                            <textarea
+                              placeholder="Add a progress or execution update..."
+                              value={newUserRemarkText}
+                              onChange={(e) => setNewUserRemarkText(e.target.value)}
+                              rows={2}
+                              style={{ width: '100%', padding: '8px', fontSize: '12px', borderRadius: '6px', border: '1px solid #cbd5e1', resize: 'vertical' }}
+                            />
+                            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '6px' }}>
+                              <button
+                                type="button"
+                                className="btn-sm"
+                                style={{ background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: '4px', padding: '4px 12px', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}
+                                disabled={!newUserRemarkText.trim() || isSubmittingUserRemark}
+                                onClick={handleAddUserRemark}
+                              >
+                                {isSubmittingUserRemark ? 'Posting...' : 'Post Update'}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </div>
 
                     <div className="cdm-field" style={{ marginTop: '12px' }}>
@@ -5494,7 +5771,6 @@ export default function DashboardPage() {
 
                             const matchedUser = usersList.find((u: any) =>
                               u.active !== false &&
-                              !u.immuneFromEscalation &&
                               (u.email.toLowerCase() === query.toLowerCase() || u.name.toLowerCase() === query.toLowerCase() || u.email.toLowerCase().includes(query.toLowerCase()) || u.name.toLowerCase().includes(query.toLowerCase()))
                             );
 
@@ -5553,7 +5829,6 @@ export default function DashboardPage() {
                           {usersList
                             .filter((u: any) =>
                               u.active !== false &&
-                              !u.immuneFromEscalation &&
                               !(formData.assignedTo || []).includes(u.id) &&
                               (!escInputText ||
                                 u.name.toLowerCase().includes(escInputText.toLowerCase()) ||
@@ -5615,7 +5890,6 @@ export default function DashboardPage() {
 
                           {usersList.filter((u: any) =>
                             u.active !== false &&
-                            !u.immuneFromEscalation &&
                             !(formData.assignedTo || []).includes(u.id) &&
                             (!escInputText ||
                               u.name.toLowerCase().includes(escInputText.toLowerCase()) ||

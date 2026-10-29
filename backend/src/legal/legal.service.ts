@@ -1,13 +1,22 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { SettingsService } from '../settings/settings.service';
 import { CreateLegalCaseDto, UpdateLegalCaseDto } from './dto/legal.dto';
 
 @Injectable()
 export class LegalService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private settingsService: SettingsService,
+  ) {}
 
   async create(createLegalCaseDto: any, userId: string) {
     const { attachments, ...data } = createLegalCaseDto;
+
+    if (attachments && attachments.length > 0) {
+      await this.settingsService.validateAttachmentSizes(attachments);
+    }
+
     const timeline = data.timeline ? JSON.parse(data.timeline) : [];
 
     return this.prisma.legalCase.create({
@@ -154,6 +163,9 @@ export class LegalService {
     });
 
     const newAttachments = attachments?.filter((a: any) => !a.id) || [];
+    if (newAttachments.length > 0) {
+      await this.settingsService.validateAttachmentSizes(newAttachments);
+    }
 
     return this.prisma.legalCase.update({
       where: { id },

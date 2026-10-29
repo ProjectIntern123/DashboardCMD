@@ -1,19 +1,19 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '../../lib/api';
 import EmailTemplatesAdmin from './components/EmailTemplatesAdmin';
-import { 
-  FaPaintBrush, 
-  FaUsers, 
-  FaShieldAlt, 
-  FaEnvelope, 
-  FaSun, 
-  FaMoon, 
-  FaBars, 
-  FaSignOutAlt, 
-  FaChevronLeft, 
+import {
+  FaPaintBrush,
+  FaUsers,
+  FaShieldAlt,
+  FaEnvelope,
+  FaSun,
+  FaMoon,
+  FaBars,
+  FaSignOutAlt,
+  FaChevronLeft,
   FaChevronRight,
   FaKey,
   FaCheck,
@@ -33,7 +33,14 @@ import {
   FaLaptop,
   FaUser,
   FaCircle,
-  FaDatabase
+  FaDatabase,
+  FaPaperclip,
+  FaFileAlt,
+  FaSyncAlt,
+  FaExclamationTriangle,
+  FaUndo,
+  FaSave,
+  FaSlidersH
 } from 'react-icons/fa';
 
 const getInitials = (name: string) => {
@@ -49,19 +56,19 @@ const format12Hour = (dateStr: string | null | undefined) => {
   if (!dateStr) return '—';
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return '—';
-  
+
   let hours = d.getHours();
   const minutes = d.getMinutes();
   const ampm = hours >= 12 ? 'PM' : 'AM';
   hours = hours % 12;
-  hours = hours ? hours : 12; 
+  hours = hours ? hours : 12;
   const minStr = minutes < 10 ? '0' + minutes : minutes;
-  
+
   const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const day = d.getDate();
   const month = months[d.getMonth()];
   const year = d.getFullYear();
-  
+
   return `${day} ${month} ${year}, ${hours}:${minStr} ${ampm}`;
 };
 
@@ -69,11 +76,26 @@ export default function AdminConsolePage() {
   const router = useRouter();
 
   // Navigation state
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'branding' | 'users' | 'roles' | 'smtp' | 'sessions' | 'email-templates'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'branding' | 'users' | 'roles' | 'smtp' | 'sessions' | 'email-templates' | 'configuration'>('dashboard');
   const [subBrandingTab, setSubBrandingTab] = useState<'dashboard' | 'login' | 'pwa'>('dashboard');
+  const [subConfigTab, setSubConfigTab] = useState<'attachments'>('attachments');
   const [loading, setLoading] = useState(true);
   const [adminUser, setAdminUser] = useState<any>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  // Configuration: Document & Attachment Settings state
+  const [savedAttachmentSizeMb, setSavedAttachmentSizeMb] = useState<string>('10');
+  const [attachmentSizeMb, setAttachmentSizeMb] = useState<string>('10');
+  const [attachmentSizeError, setAttachmentSizeError] = useState<string | null>(null);
+  const [isSavingAttachmentConfig, setIsSavingAttachmentConfig] = useState<boolean>(false);
+  const [isReloadingAttachmentConfig, setIsReloadingAttachmentConfig] = useState<boolean>(false);
+  const [testFileResult, setTestFileResult] = useState<{
+    name: string;
+    sizeBytes: number;
+    sizeMb: number;
+    allowed: boolean;
+    message: string;
+  } | null>(null);
 
   // Stats and session logs state
   const [stats, setStats] = useState<any>({
@@ -164,8 +186,61 @@ export default function AdminConsolePage() {
     roleId: '',
     managerId: '',
     active: true,
-    immuneFromEscalation: false,
   });
+
+  // Temporary key one-time display modal state
+  const [tempKeyModal, setTempKeyModal] = useState<{
+    open: boolean;
+    tempPassword: string;
+    userEmail: string;
+    userName: string;
+    copied?: boolean;
+    copyError?: string | null;
+  } | null>(null);
+  const copyTimeoutRef = useRef<any>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimeoutRef.current) {
+        clearTimeout(copyTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const closeTempKeyModal = () => {
+    if (copyTimeoutRef.current) {
+      clearTimeout(copyTimeoutRef.current);
+      copyTimeoutRef.current = null;
+    }
+    setTempKeyModal(null);
+  };
+
+  const handleCopyTempPassword = async () => {
+    if (!tempKeyModal) return;
+
+    if (copyTimeoutRef.current) {
+      clearTimeout(copyTimeoutRef.current);
+      copyTimeoutRef.current = null;
+    }
+
+    if (typeof navigator === 'undefined' || !navigator.clipboard || !navigator.clipboard.writeText) {
+      setTempKeyModal(prev => prev ? { ...prev, copied: false, copyError: 'Clipboard access is unavailable in this environment. Please select and copy the key manually.' } : null);
+      showToast('Clipboard access unavailable. Please copy the key manually.', 'err');
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(tempKeyModal.tempPassword);
+      setTempKeyModal(prev => prev ? { ...prev, copied: true, copyError: null } : null);
+      copyTimeoutRef.current = setTimeout(() => {
+        setTempKeyModal(prev => prev ? { ...prev, copied: false } : null);
+        copyTimeoutRef.current = null;
+      }, 2000);
+    } catch {
+      setTempKeyModal(prev => prev ? { ...prev, copied: false, copyError: 'Unable to write to clipboard. Please select and copy the key manually.' } : null);
+      showToast('Could not copy to clipboard. Please copy the key manually.', 'err');
+    }
+  };
 
   // Role Management state
   const [selectedRole, setSelectedRole] = useState<any>(null);
@@ -221,10 +296,14 @@ export default function AdminConsolePage() {
       ]);
 
       setBranding((prev: any) => ({ ...prev, ...brandData }));
+      const loadedMb = brandData?.max_attachment_size_mb ? String(brandData.max_attachment_size_mb) : '10';
+      setSavedAttachmentSizeMb(loadedMb);
+      setAttachmentSizeMb(loadedMb);
+      setAttachmentSizeError(null);
       setUsers(userData);
       setRoles(roleData);
       setPermissions(permData);
-      
+
       if (statsData) {
         setStats(statsData);
       }
@@ -317,6 +396,106 @@ export default function AdminConsolePage() {
     reader.readAsDataURL(file);
   };
 
+  const handleAttachmentSizeChange = (val: string) => {
+    setAttachmentSizeMb(val);
+    const trimmed = val.trim();
+    if (!trimmed) {
+      setAttachmentSizeError('Maximum attachment size is required.');
+    } else if (!/^\d+$/.test(trimmed)) {
+      setAttachmentSizeError('Maximum attachment size must be an integer whole number in MB.');
+    } else {
+      const parsed = parseInt(trimmed, 10);
+      if (parsed < 1 || parsed > 35) {
+        setAttachmentSizeError('Maximum attachment size must be between 1 MB and 35 MB.');
+      } else {
+        setAttachmentSizeError(null);
+      }
+    }
+  };
+
+  const handlePresetSelect = (mb: number) => {
+    setAttachmentSizeMb(String(mb));
+    setAttachmentSizeError(null);
+  };
+
+  const handleResetAttachmentConfig = () => {
+    setAttachmentSizeMb(savedAttachmentSizeMb);
+    setAttachmentSizeError(null);
+    showToast('Form changes reset to last saved setting');
+  };
+
+  const handleReloadAttachmentConfig = async () => {
+    setIsReloadingAttachmentConfig(true);
+    try {
+      const res = await api.get('/settings/attachment-limit');
+      const freshMb = String(res.maxAttachmentSizeMb || '10');
+      setSavedAttachmentSizeMb(freshMb);
+      setAttachmentSizeMb(freshMb);
+      setAttachmentSizeError(null);
+      setBranding((prev: any) => ({ ...prev, max_attachment_size_mb: freshMb }));
+      showToast(`Configuration reloaded from server: ${freshMb} MB`, 'ok');
+    } catch (err: any) {
+      showToast('Failed to reload configuration from server', 'err');
+    } finally {
+      setIsReloadingAttachmentConfig(false);
+    }
+  };
+
+  const handleSaveAttachmentConfig = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const trimmed = attachmentSizeMb.trim();
+    if (!trimmed || !/^\d+$/.test(trimmed)) {
+      setAttachmentSizeError('Please enter a valid whole number in MB (1 to 35).');
+      return;
+    }
+    const parsed = parseInt(trimmed, 10);
+    if (parsed < 1 || parsed > 35) {
+      setAttachmentSizeError('Maximum attachment size must be between 1 MB and 35 MB.');
+      return;
+    }
+
+    setIsSavingAttachmentConfig(true);
+    try {
+      const res = await api.put('/settings/attachment-limit', { maxAttachmentSizeMb: parsed });
+      setSavedAttachmentSizeMb(String(parsed));
+      setAttachmentSizeMb(String(parsed));
+      setAttachmentSizeError(null);
+      setBranding((prev: any) => ({ ...prev, max_attachment_size_mb: String(parsed) }));
+      const toastMsg = res?.message || `Document attachment size limit updated to ${parsed} MB successfully`;
+      showToast(toastMsg, 'ok');
+    } catch (err: any) {
+      const msg = err?.message || 'Failed to update attachment size limit';
+      showToast(msg, 'err');
+      setAttachmentSizeError(msg);
+    } finally {
+      setIsSavingAttachmentConfig(false);
+    }
+  };
+
+  const handleTestFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const sizeMb = parseFloat((file.size / (1024 * 1024)).toFixed(2));
+    const currentLimitMb = parseInt(savedAttachmentSizeMb || '10', 10);
+    const allowedByPolicy = sizeMb <= currentLimitMb;
+    const withinSafeInline = sizeMb <= 35;
+    let message = '';
+    if (!allowedByPolicy) {
+      message = `Rejected: "${file.name}" (${sizeMb} MB) exceeds active policy limit of ${currentLimitMb} MB.`;
+    } else if (!withinSafeInline) {
+      message = `Policy Allowed (${currentLimitMb} MB), but exceeds 35 MB raw ceiling for Base64 JSON transport (server 50 MB limit). Infrastructure streaming configuration required for files > 35 MB.`;
+    } else {
+      message = `Permitted: "${file.name}" (${sizeMb} MB) is within both active policy (${currentLimitMb} MB) and current infrastructure limits.`;
+    }
+    setTestFileResult({
+      name: file.name,
+      sizeBytes: file.size,
+      sizeMb,
+      allowed: allowedByPolicy && withinSafeInline,
+      message,
+    });
+  };
+
   useEffect(() => {
     if (selectedRole && selectedRole.permissions) {
       setTempPermissionIds(selectedRole.permissions.map((rp: any) => rp.permissionId));
@@ -331,16 +510,16 @@ export default function AdminConsolePage() {
       const existingLinks = document.querySelectorAll("link[rel*='icon']");
       existingLinks.forEach(el => el.remove());
 
-      const cacheBustedUrl = faviconUrl.startsWith('data:') 
-        ? faviconUrl 
+      const cacheBustedUrl = faviconUrl.startsWith('data:')
+        ? faviconUrl
         : `${faviconUrl}${faviconUrl.includes('?') ? '&' : '?'}v=${Date.now()}`;
 
       const linkIcon = document.createElement('link');
       linkIcon.rel = 'icon';
-      linkIcon.type = faviconUrl.startsWith('data:image/svg') 
-        ? 'image/svg+xml' 
-        : faviconUrl.startsWith('data:image/png') 
-          ? 'image/png' 
+      linkIcon.type = faviconUrl.startsWith('data:image/svg')
+        ? 'image/svg+xml'
+        : faviconUrl.startsWith('data:image/png')
+          ? 'image/png'
           : 'image/x-icon';
       linkIcon.href = cacheBustedUrl;
       document.head.appendChild(linkIcon);
@@ -378,14 +557,14 @@ export default function AdminConsolePage() {
     e.preventDefault();
     try {
       const payload = { ...userForm };
-      
+
       // Frontend validation safeguards
       if (payload.id && adminUser && payload.id === adminUser.id) {
         if (payload.active === false) {
           showToast('You cannot deactivate your own logged-in user account.', 'err');
           return;
         }
-        
+
         // Check if role changed from admin to non-admin
         const selectedRoleObj = roles.find(r => r.id === payload.roleId);
         const willBeAdmin = selectedRoleObj?.name === 'Admin';
@@ -614,16 +793,16 @@ export default function AdminConsolePage() {
     <div className={isDark ? 'dark' : ''} style={{ minHeight: '100vh', background: isDark ? '#0f172a' : '#f8fafc', color: isDark ? '#f1f5f9' : '#0f172a', fontFamily: 'sans-serif', transition: 'all 0.3s', display: 'flex', flexDirection: 'column' }}>
       {/* Toast popup */}
       {toast && (
-        <div 
-          style={{ 
-            position: 'fixed', 
-            top: '20px', 
-            right: '20px', 
-            background: toast.type === 'err' ? '#ef4444' : '#10b981', 
-            color: '#fff', 
-            padding: '12px 24px', 
-            borderRadius: '8px', 
-            boxShadow: '0 10px 25px rgba(0,0,0,0.1)', 
+        <div
+          style={{
+            position: 'fixed',
+            top: '20px',
+            right: '20px',
+            background: toast.type === 'err' ? '#ef4444' : '#10b981',
+            color: '#fff',
+            padding: '12px 24px',
+            borderRadius: '8px',
+            boxShadow: '0 10px 25px rgba(0,0,0,0.1)',
             zIndex: 99999,
             fontWeight: 600,
             fontSize: '13px'
@@ -657,8 +836,8 @@ export default function AdminConsolePage() {
 
           <div className="tb-right" style={{ position: 'relative' }}>
             {/* DARK / LIGHT THEME TOGGLE BUTTON */}
-            <button 
-              onClick={toggleTheme} 
+            <button
+              onClick={toggleTheme}
               title={isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
               style={{
                 background: 'rgba(255,255,255,0.1)',
@@ -679,9 +858,9 @@ export default function AdminConsolePage() {
             </button>
 
             {/* ACTIVE USER PILL */}
-            <div 
-              className="user-pill" 
-              onClick={() => setShowProfileDropdown(!showProfileDropdown)} 
+            <div
+              className="user-pill"
+              onClick={() => setShowProfileDropdown(!showProfileDropdown)}
               title="Click to view profile"
               style={{
                 cursor: 'pointer',
@@ -706,11 +885,11 @@ export default function AdminConsolePage() {
             {/* USER PROFILE DROPDOWN */}
             {showProfileDropdown && (
               <>
-                <div 
-                  style={{ position: 'fixed', inset: 0, zIndex: 199 }} 
-                  onClick={() => setShowProfileDropdown(false)} 
+                <div
+                  style={{ position: 'fixed', inset: 0, zIndex: 199 }}
+                  onClick={() => setShowProfileDropdown(false)}
                 />
-                <div 
+                <div
                   style={{
                     position: 'absolute',
                     top: '48px',
@@ -734,8 +913,8 @@ export default function AdminConsolePage() {
                     <div style={{ fontSize: '11px', color: isDark ? '#94a3b8' : 'var(--muted)', marginTop: '2px', wordBreak: 'break-all' }}>{adminUser?.email}</div>
                   </div>
                   <hr style={{ border: 0, borderTop: isDark ? '1px solid #334155' : '1px solid #e2e8f0', margin: 0 }} />
-                  <button 
-                    className="btn-add" 
+                  <button
+                    className="btn-add"
                     style={{ width: '100%', background: '#b91c1c', color: '#fff', border: 'none', padding: '8px 12px', borderRadius: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: 600, textAlign: 'center' }}
                     onClick={() => {
                       setShowProfileDropdown(false);
@@ -754,12 +933,12 @@ export default function AdminConsolePage() {
       {/* MAIN CONTAINER (Sticky sidebar layout) */}
       <div style={{ display: 'flex', flex: 1, width: '100%', height: 'calc(100vh - 56px)', overflow: 'hidden', alignItems: 'stretch' }}>
         {/* SIDEBAR TABS (Collapsible, scrollable, sticky) */}
-        <aside 
-          style={{ 
-            width: sidebarCollapsed ? '75px' : '260px', 
-            flexShrink: 0, 
-            display: 'flex', 
-            flexDirection: 'column', 
+        <aside
+          style={{
+            width: sidebarCollapsed ? '75px' : '260px',
+            flexShrink: 0,
+            display: 'flex',
+            flexDirection: 'column',
             justifyContent: 'space-between',
             background: isDark ? '#111827' : '#fff',
             borderRight: isDark ? '1px solid #1f2937' : '1px solid #e5e7eb',
@@ -806,23 +985,23 @@ export default function AdminConsolePage() {
 
           {/* Scrollable Tab Items list */}
           <div className="sidebar-scroll" style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: 1, overflowY: 'auto', paddingBottom: '16px' }}>
-            <button 
-              className={`tab ${activeTab === 'dashboard' ? 'active' : ''}`} 
+            <button
+              className={`tab ${activeTab === 'dashboard' ? 'active' : ''}`}
               onClick={() => setActiveTab('dashboard')}
               title="Overview Dashboard"
-              style={{ 
+              style={{
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: sidebarCollapsed ? 'center' : 'flex-start',
                 gap: sidebarCollapsed ? '0' : '12px',
-                padding: '12px 16px', 
-                borderRadius: '8px', 
-                border: 'none', 
-                cursor: 'pointer', 
-                fontSize: '14px', 
-                fontWeight: 600, 
-                background: activeTab === 'dashboard' ? (isDark ? '#3b82f6' : (branding.primary_color || 'var(--navy)')) : 'transparent', 
-                color: activeTab === 'dashboard' ? '#fff' : (isDark ? '#9ca3af' : '#4b5563'), 
+                padding: '12px 16px',
+                borderRadius: '8px',
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: 600,
+                background: activeTab === 'dashboard' ? (isDark ? '#3b82f6' : (branding.primary_color || 'var(--navy)')) : 'transparent',
+                color: activeTab === 'dashboard' ? '#fff' : (isDark ? '#9ca3af' : '#4b5563'),
                 transition: 'all 0.2s',
                 width: '100%'
               }}
@@ -831,23 +1010,23 @@ export default function AdminConsolePage() {
               {!sidebarCollapsed && <span>Dashboard Overview</span>}
             </button>
 
-            <button 
-              className={`tab ${activeTab === 'branding' ? 'active' : ''}`} 
+            <button
+              className={`tab ${activeTab === 'branding' ? 'active' : ''}`}
               onClick={() => setActiveTab('branding')}
               title="Branding Configuration"
-              style={{ 
+              style={{
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: sidebarCollapsed ? 'center' : 'flex-start',
                 gap: sidebarCollapsed ? '0' : '12px',
-                padding: '12px 16px', 
-                borderRadius: '8px', 
-                border: 'none', 
-                cursor: 'pointer', 
-                fontSize: '14px', 
-                fontWeight: 600, 
-                background: activeTab === 'branding' ? (isDark ? '#3b82f6' : (branding.primary_color || 'var(--navy)')) : 'transparent', 
-                color: activeTab === 'branding' ? '#fff' : (isDark ? '#9ca3af' : '#4b5563'), 
+                padding: '12px 16px',
+                borderRadius: '8px',
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: 600,
+                background: activeTab === 'branding' ? (isDark ? '#3b82f6' : (branding.primary_color || 'var(--navy)')) : 'transparent',
+                color: activeTab === 'branding' ? '#fff' : (isDark ? '#9ca3af' : '#4b5563'),
                 transition: 'all 0.2s',
                 width: '100%'
               }}
@@ -856,23 +1035,23 @@ export default function AdminConsolePage() {
               {!sidebarCollapsed && <span>Branding & Customization</span>}
             </button>
 
-            <button 
-              className={`tab ${activeTab === 'users' ? 'active' : ''}`} 
+            <button
+              className={`tab ${activeTab === 'users' ? 'active' : ''}`}
               onClick={() => setActiveTab('users')}
               title="User Management"
-              style={{ 
+              style={{
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: sidebarCollapsed ? 'center' : 'flex-start',
                 gap: sidebarCollapsed ? '0' : '12px',
-                padding: '12px 16px', 
-                borderRadius: '8px', 
-                border: 'none', 
-                cursor: 'pointer', 
-                fontSize: '14px', 
-                fontWeight: 600, 
-                background: activeTab === 'users' ? (isDark ? '#3b82f6' : (branding.primary_color || 'var(--navy)')) : 'transparent', 
-                color: activeTab === 'users' ? '#fff' : (isDark ? '#9ca3af' : '#4b5563'), 
+                padding: '12px 16px',
+                borderRadius: '8px',
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: 600,
+                background: activeTab === 'users' ? (isDark ? '#3b82f6' : (branding.primary_color || 'var(--navy)')) : 'transparent',
+                color: activeTab === 'users' ? '#fff' : (isDark ? '#9ca3af' : '#4b5563'),
                 transition: 'all 0.2s',
                 width: '100%'
               }}
@@ -881,23 +1060,23 @@ export default function AdminConsolePage() {
               {!sidebarCollapsed && <span>User Account Directory</span>}
             </button>
 
-            <button 
-              className={`tab ${activeTab === 'roles' ? 'active' : ''}`} 
+            <button
+              className={`tab ${activeTab === 'roles' ? 'active' : ''}`}
               onClick={() => setActiveTab('roles')}
               title="Access Control Rules"
-              style={{ 
+              style={{
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: sidebarCollapsed ? 'center' : 'flex-start',
                 gap: sidebarCollapsed ? '0' : '12px',
-                padding: '12px 16px', 
-                borderRadius: '8px', 
-                border: 'none', 
-                cursor: 'pointer', 
-                fontSize: '14px', 
-                fontWeight: 600, 
-                background: activeTab === 'roles' ? (isDark ? '#3b82f6' : (branding.primary_color || 'var(--navy)')) : 'transparent', 
-                color: activeTab === 'roles' ? '#fff' : (isDark ? '#9ca3af' : '#4b5563'), 
+                padding: '12px 16px',
+                borderRadius: '8px',
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: 600,
+                background: activeTab === 'roles' ? (isDark ? '#3b82f6' : (branding.primary_color || 'var(--navy)')) : 'transparent',
+                color: activeTab === 'roles' ? '#fff' : (isDark ? '#9ca3af' : '#4b5563'),
                 transition: 'all 0.2s',
                 width: '100%'
               }}
@@ -906,23 +1085,23 @@ export default function AdminConsolePage() {
               {!sidebarCollapsed && <span>Role & Access Controls</span>}
             </button>
 
-            <button 
-              className={`tab ${activeTab === 'smtp' ? 'active' : ''}`} 
+            <button
+              className={`tab ${activeTab === 'smtp' ? 'active' : ''}`}
               onClick={() => setActiveTab('smtp')}
               title="SMTP Config Setup"
-              style={{ 
+              style={{
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: sidebarCollapsed ? 'center' : 'flex-start',
                 gap: sidebarCollapsed ? '0' : '12px',
-                padding: '12px 16px', 
-                borderRadius: '8px', 
-                border: 'none', 
-                cursor: 'pointer', 
-                fontSize: '14px', 
-                fontWeight: 600, 
-                background: activeTab === 'smtp' ? (isDark ? '#3b82f6' : (branding.primary_color || 'var(--navy)')) : 'transparent', 
-                color: activeTab === 'smtp' ? '#fff' : (isDark ? '#9ca3af' : '#4b5563'), 
+                padding: '12px 16px',
+                borderRadius: '8px',
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: 600,
+                background: activeTab === 'smtp' ? (isDark ? '#3b82f6' : (branding.primary_color || 'var(--navy)')) : 'transparent',
+                color: activeTab === 'smtp' ? '#fff' : (isDark ? '#9ca3af' : '#4b5563'),
                 transition: 'all 0.2s',
                 width: '100%'
               }}
@@ -931,23 +1110,23 @@ export default function AdminConsolePage() {
               {!sidebarCollapsed && <span>SMTP Mail Gateway</span>}
             </button>
 
-            <button 
-              className={`tab ${activeTab === 'email-templates' ? 'active' : ''}`} 
+            <button
+              className={`tab ${activeTab === 'email-templates' ? 'active' : ''}`}
               onClick={() => setActiveTab('email-templates')}
               title="Notification Email Templates"
-              style={{ 
+              style={{
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: sidebarCollapsed ? 'center' : 'flex-start',
                 gap: sidebarCollapsed ? '0' : '12px',
-                padding: '12px 16px', 
-                borderRadius: '8px', 
-                border: 'none', 
-                cursor: 'pointer', 
-                fontSize: '14px', 
-                fontWeight: 600, 
-                background: activeTab === 'email-templates' ? (isDark ? '#3b82f6' : (branding.primary_color || 'var(--navy)')) : 'transparent', 
-                color: activeTab === 'email-templates' ? '#fff' : (isDark ? '#9ca3af' : '#4b5563'), 
+                padding: '12px 16px',
+                borderRadius: '8px',
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: 600,
+                background: activeTab === 'email-templates' ? (isDark ? '#3b82f6' : (branding.primary_color || 'var(--navy)')) : 'transparent',
+                color: activeTab === 'email-templates' ? '#fff' : (isDark ? '#9ca3af' : '#4b5563'),
                 transition: 'all 0.2s',
                 width: '100%'
               }}
@@ -956,23 +1135,23 @@ export default function AdminConsolePage() {
               {!sidebarCollapsed && <span>Email Templates</span>}
             </button>
 
-            <button 
-              className={`tab ${activeTab === 'sessions' ? 'active' : ''}`} 
+            <button
+              className={`tab ${activeTab === 'sessions' ? 'active' : ''}`}
               onClick={() => setActiveTab('sessions')}
               title="User Sessions & Activities Audit Logs"
-              style={{ 
+              style={{
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: sidebarCollapsed ? 'center' : 'flex-start',
                 gap: sidebarCollapsed ? '0' : '12px',
-                padding: '12px 16px', 
-                borderRadius: '8px', 
-                border: 'none', 
-                cursor: 'pointer', 
-                fontSize: '14px', 
-                fontWeight: 600, 
-                background: activeTab === 'sessions' ? (isDark ? '#3b82f6' : (branding.primary_color || 'var(--navy)')) : 'transparent', 
-                color: activeTab === 'sessions' ? '#fff' : (isDark ? '#9ca3af' : '#4b5563'), 
+                padding: '12px 16px',
+                borderRadius: '8px',
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: 600,
+                background: activeTab === 'sessions' ? (isDark ? '#3b82f6' : (branding.primary_color || 'var(--navy)')) : 'transparent',
+                color: activeTab === 'sessions' ? '#fff' : (isDark ? '#9ca3af' : '#4b5563'),
                 transition: 'all 0.2s',
                 width: '100%'
               }}
@@ -980,17 +1159,42 @@ export default function AdminConsolePage() {
               <FaHistory style={{ fontSize: '16px', flexShrink: 0 }} />
               {!sidebarCollapsed && <span>Security Audit Logs</span>}
             </button>
+
+            <button
+              className={`tab ${activeTab === 'configuration' ? 'active' : ''}`}
+              onClick={() => setActiveTab('configuration')}
+              title="System Configuration & Attachment Settings"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: sidebarCollapsed ? 'center' : 'flex-start',
+                gap: sidebarCollapsed ? '0' : '12px',
+                padding: '12px 16px',
+                borderRadius: '8px',
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: 600,
+                background: activeTab === 'configuration' ? (isDark ? '#3b82f6' : (branding.primary_color || 'var(--navy)')) : 'transparent',
+                color: activeTab === 'configuration' ? '#fff' : (isDark ? '#9ca3af' : '#4b5563'),
+                transition: 'all 0.2s',
+                width: '100%'
+              }}
+            >
+              <FaTools style={{ fontSize: '16px', flexShrink: 0 }} />
+              {!sidebarCollapsed && <span>Configuration</span>}
+            </button>
           </div>
 
           {/* BOTTOM LOGOUT BUTTON (Pinned strictly at sidebar bottom) */}
-          <div style={{ 
-            borderTop: isDark ? '1px solid #1f2937' : '1px solid #e5e7eb', 
+          <div style={{
+            borderTop: isDark ? '1px solid #1f2937' : '1px solid #e5e7eb',
             paddingTop: '16px',
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'stretch'
           }}>
-            <button 
+            <button
               onClick={() => setShowLogoutConfirmModal(true)}
               title="Logout Session"
               className="tab admin-logout-tab-btn"
@@ -999,12 +1203,12 @@ export default function AdminConsolePage() {
                 alignItems: 'center',
                 justifyContent: sidebarCollapsed ? 'center' : 'flex-start',
                 gap: sidebarCollapsed ? '0' : '12px',
-                padding: '12px 16px', 
-                borderRadius: '8px', 
-                border: 'none', 
-                cursor: 'pointer', 
-                fontSize: '14px', 
-                fontWeight: 600, 
+                padding: '12px 16px',
+                borderRadius: '8px',
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: 600,
                 background: 'transparent',
                 color: '#ef4444',
                 transition: 'all 0.2s',
@@ -1018,10 +1222,10 @@ export default function AdminConsolePage() {
         </aside>
 
         {/* WORKSPACE CONTENT PANELS (Natural window scrolling wrapper) */}
-        <main 
-          style={{ 
-            flex: 1, 
-            background: isDark ? '#0f172a' : '#f8fafc', 
+        <main
+          style={{
+            flex: 1,
+            background: isDark ? '#0f172a' : '#f8fafc',
             padding: '24px 32px',
             minWidth: 0,
             height: '100%',
@@ -1035,7 +1239,7 @@ export default function AdminConsolePage() {
               transition: 'all 0.3s'
             }}
           >
-          
+
           {/* TAB 0: DASHBOARD OVERVIEW */}
           {activeTab === 'dashboard' && (
             <div>
@@ -1046,7 +1250,7 @@ export default function AdminConsolePage() {
 
               {/* Statistics Metric Cards */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px', marginBottom: '24px' }}>
-                <div 
+                <div
                   onClick={() => handleDashboardStatClick('all')}
                   className="admin-card admin-card-interactive"
                   style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '20px' }}
@@ -1061,7 +1265,7 @@ export default function AdminConsolePage() {
                   </div>
                 </div>
 
-                <div 
+                <div
                   onClick={() => handleDashboardStatClick('online')}
                   className="admin-card admin-card-interactive"
                   style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '20px' }}
@@ -1077,7 +1281,7 @@ export default function AdminConsolePage() {
                   </div>
                 </div>
 
-                <div 
+                <div
                   onClick={() => handleDashboardStatClick('offline')}
                   className="admin-card admin-card-interactive"
                   style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '20px' }}
@@ -1095,12 +1299,12 @@ export default function AdminConsolePage() {
 
               {/* Main dashboard columns layout (based on 2nd image UI concept) */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '24px' }}>
-                
+
                 {/* Left Column: Team Status Directory */}
                 <div style={{ background: isDark ? '#1e293b' : '#fff', border: isDark ? '1px solid #334155' : '1px solid #e2e8f0', borderRadius: '12px', padding: '24px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.05)' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: isDark ? '1px solid #334155' : '1px solid #f1f5f9', paddingBottom: '12px', marginBottom: '16px', flexWrap: 'wrap', gap: '8px' }}>
                     <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: isDark ? '#3b82f6' : 'var(--navy)' }}>Real-Time Staff Directory</h3>
-                    
+
                     {/* Status filter pills */}
                     <div style={{ display: 'flex', gap: '4px', background: isDark ? '#0f172a' : '#f1f5f9', padding: '2px', borderRadius: '6px' }}>
                       <button type="button" onClick={() => setDashboardFilter('online')} style={{ padding: '4px 8px', border: 'none', background: dashboardFilter === 'online' ? '#10b981' : 'transparent', color: dashboardFilter === 'online' ? '#fff' : '#64748b', fontSize: '11px', fontWeight: 600, borderRadius: '4px', cursor: 'pointer' }}>Online</button>
@@ -1111,9 +1315,9 @@ export default function AdminConsolePage() {
                   {/* Search Bar for Staff Directory */}
                   <div style={{ position: 'relative', marginBottom: '16px' }}>
                     <FaSearch style={{ position: 'absolute', left: '12px', top: '12px', color: isDark ? '#475569' : '#94a3b8' }} />
-                    <input 
-                      type="text" 
-                      placeholder="Search active staff profile..." 
+                    <input
+                      type="text"
+                      placeholder="Search active staff profile..."
                       value={dashboardSearch}
                       onChange={e => setDashboardSearch(e.target.value)}
                       style={{ width: '100%', padding: '10px 10px 10px 36px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '8px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
@@ -1176,7 +1380,7 @@ export default function AdminConsolePage() {
                               <span style={{ fontSize: '9px', color: isDark ? '#94a3b8' : '#64748b' }}>{format12Hour(log.loginTime).split(', ')[1]}</span>
                             </div>
                             <div style={{ fontSize: '10px', color: isDark ? '#94a3b8' : '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: '2px' }}>{log.userEmail}</div>
-                            
+
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px', fontSize: '10px' }}>
                               <span style={{ color: isDark ? '#cbd5e1' : '#475569' }}>
                                 🟢 IN: {format12Hour(log.loginTime).split(', ')[1]}
@@ -1263,21 +1467,21 @@ export default function AdminConsolePage() {
 
               <div style={{ background: isDark ? '#1e293b' : '#fff', border: isDark ? '1px solid #334155' : '1px solid #e2e8f0', borderRadius: '12px', padding: '24px', maxWidth: '680px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.05)' }}>
                 <form onSubmit={handleBrandingSave} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                  
+
                   {subBrandingTab === 'dashboard' ? (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                       <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: isDark ? '#3b82f6' : 'var(--navy)', borderBottom: isDark ? '1px solid #334155' : '1px solid #f1f5f9', paddingBottom: '8px' }}>Application Branding</h3>
-                      
+
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                         <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>Dashboard App Name</label>
                         <input type="text" value={branding.app_name} onChange={e => setBranding({...branding, app_name: e.target.value})} style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} />
                       </div>
-                      
+
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                         <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>Dashboard Subtitle</label>
                         <input type="text" value={branding.app_subtitle} onChange={e => setBranding({...branding, app_subtitle: e.target.value})} style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} />
                       </div>
-                      
+
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                         <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>Dashboard Logo (Emoji/Text or Upload image below)</label>
                         <input type="text" value={branding.app_logo} onChange={e => setBranding({...branding, app_logo: e.target.value})} style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} />
@@ -1302,10 +1506,10 @@ export default function AdminConsolePage() {
                       </div>
 
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '8px' }}>
-                        <input 
-                          type="checkbox" 
-                          id="apply-to-admin" 
-                          checked={branding.apply_branding_to_admin === 'true'} 
+                        <input
+                          type="checkbox"
+                          id="apply-to-admin"
+                          checked={branding.apply_branding_to_admin === 'true'}
                           onChange={e => setBranding({...branding, apply_branding_to_admin: e.target.checked ? 'true' : 'false'})}
                           style={{ width: '16px', height: '16px', cursor: 'pointer' }}
                         />
@@ -1317,60 +1521,60 @@ export default function AdminConsolePage() {
                       {/* Browser Tab & Favicon Configuration */}
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', marginTop: '16px', borderTop: isDark ? '1px solid #334155' : '1px solid #f1f5f9', paddingTop: '16px' }}>
                         <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: isDark ? '#3b82f6' : 'var(--navy)' }}>Browser Tab & Favicon Configuration</h3>
-                        
+
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                           <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>Browser Tab Title (Name shown on browser tab)</label>
-                          <input 
-                            type="text" 
-                            value={branding.browser_tab_title || ''} 
-                            onChange={e => setBranding({...branding, browser_tab_title: e.target.value})} 
+                          <input
+                            type="text"
+                            value={branding.browser_tab_title || ''}
+                            onChange={e => setBranding({...branding, browser_tab_title: e.target.value})}
                             placeholder="e.g. HARTEK CMD Executive Dashboard"
-                            style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} 
+                            style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
                           />
                         </div>
-                        
+
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                           <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>
                             Browser Tab Favicon (Enter Image URL or Upload File from System)
                           </label>
                           <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
-                            <input 
-                              type="text" 
-                              value={branding.favicon_url || ''} 
-                              onChange={e => setBranding({...branding, favicon_url: e.target.value})} 
+                            <input
+                              type="text"
+                              value={branding.favicon_url || ''}
+                              onChange={e => setBranding({...branding, favicon_url: e.target.value})}
                               placeholder="e.g. https://example.com/favicon.ico or data:image/png..."
-                              style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', flex: 1, minWidth: '220px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} 
+                              style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', flex: 1, minWidth: '220px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
                             />
-                            <label 
-                              htmlFor="favicon-file-input" 
-                              style={{ 
-                                padding: '10px 14px', 
-                                background: isDark ? '#334155' : '#f1f5f9', 
-                                color: isDark ? '#3b82f6' : 'var(--navy)', 
-                                border: isDark ? '1px solid #4b5563' : '1px solid #cbd5e1', 
-                                borderRadius: '6px', 
-                                cursor: 'pointer', 
-                                fontWeight: 700, 
-                                fontSize: '12px', 
-                                display: 'inline-flex', 
-                                alignItems: 'center', 
+                            <label
+                              htmlFor="favicon-file-input"
+                              style={{
+                                padding: '10px 14px',
+                                background: isDark ? '#334155' : '#f1f5f9',
+                                color: isDark ? '#3b82f6' : 'var(--navy)',
+                                border: isDark ? '1px solid #4b5563' : '1px solid #cbd5e1',
+                                borderRadius: '6px',
+                                cursor: 'pointer',
+                                fontWeight: 700,
+                                fontSize: '12px',
+                                display: 'inline-flex',
+                                alignItems: 'center',
                                 gap: '6px',
-                                whiteSpace: 'nowrap' 
+                                whiteSpace: 'nowrap'
                               }}
                             >
                               📁 Upload Image File
                             </label>
-                            <input 
-                              id="favicon-file-input" 
-                              type="file" 
-                              accept="image/*,.ico,.png,.svg,.jpg" 
-                              onChange={handleFaviconUpload} 
-                              style={{ display: 'none' }} 
+                            <input
+                              id="favicon-file-input"
+                              type="file"
+                              accept="image/*,.ico,.png,.svg,.jpg"
+                              onChange={handleFaviconUpload}
+                              style={{ display: 'none' }}
                             />
                             {branding.favicon_url && (
-                              <img 
-                                src={branding.favicon_url} 
-                                alt="Favicon Preview" 
+                              <img
+                                src={branding.favicon_url}
+                                alt="Favicon Preview"
                                 style={{ width: '32px', height: '32px', objectFit: 'contain', borderRadius: '4px', border: '1px solid #cbd5e1', background: '#fff', padding: '2px' }}
                                 onError={(e) => (e.currentTarget.style.display = 'none')}
                               />
@@ -1382,12 +1586,12 @@ export default function AdminConsolePage() {
                   ) : subBrandingTab === 'login' ? (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                       <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: isDark ? '#3b82f6' : 'var(--navy)', borderBottom: isDark ? '1px solid #334155' : '1px solid #f1f5f9', paddingBottom: '8px' }}>Login Screen Customization</h3>
-                      
+
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                         <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>Login Screen Heading</label>
                         <input type="text" value={branding.login_heading} onChange={e => setBranding({...branding, login_heading: e.target.value})} style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} />
                       </div>
-                      
+
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                         <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>Login Screen Subtitle</label>
                         <input type="text" value={branding.login_subtitle} onChange={e => setBranding({...branding, login_subtitle: e.target.value})} style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} />
@@ -1397,17 +1601,17 @@ export default function AdminConsolePage() {
                         <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>Login Logo (Emoji/Text or Upload image below)</label>
                         <input type="text" value={branding.login_logo} onChange={e => setBranding({...branding, login_logo: e.target.value})} style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} />
                       </div>
-                      
+
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                         <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>Or: Upload custom Login Logo file</label>
                         <input type="file" accept="image/*" onChange={handleLoginLogoUpload} style={{ fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }} />
                       </div>
-                      
+
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '8px', padding: '12px', background: isDark ? '#0f172a' : '#f8fafc' }}>
                         <label style={{ fontWeight: 700, fontSize: '12px', color: isDark ? '#3b82f6' : '#1e293b' }}>Login Background Mode</label>
-                        <select 
-                          value={branding.login_bg_type || 'gradient'} 
-                          onChange={e => setBranding({...branding, login_bg_type: e.target.value})} 
+                        <select
+                          value={branding.login_bg_type || 'gradient'}
+                          onChange={e => setBranding({...branding, login_bg_type: e.target.value})}
                           style={{ padding: '8px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#1e293b' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
                         >
                           <option value="solid">Solid Background Color</option>
@@ -1456,9 +1660,9 @@ export default function AdminConsolePage() {
                       <div style={{ display: 'flex', gap: '16px', marginTop: '4px', flexWrap: 'wrap' }}>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: '1 1 200px' }}>
                           <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>Login Box Position</label>
-                          <select 
-                            value={branding.login_container_pos || 'center'} 
-                            onChange={e => setBranding({...branding, login_container_pos: e.target.value})} 
+                          <select
+                            value={branding.login_container_pos || 'center'}
+                            onChange={e => setBranding({...branding, login_container_pos: e.target.value})}
                             style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
                           >
                             <option value="center">Center Boxed</option>
@@ -1471,12 +1675,12 @@ export default function AdminConsolePage() {
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: '1 1 200px' }}>
                           <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>Login Box Opacity (%)</label>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                            <input 
-                              type="range" 
-                              min="0" 
-                              max="100" 
-                              value={branding.login_container_opacity || '100'} 
-                              onChange={e => setBranding({...branding, login_container_opacity: e.target.value})} 
+                            <input
+                              type="range"
+                              min="0"
+                              max="100"
+                              value={branding.login_container_opacity || '100'}
+                              onChange={e => setBranding({...branding, login_container_opacity: e.target.value})}
                               style={{ flex: 1, cursor: 'pointer' }}
                             />
                             <span style={{ fontSize: '13px', fontWeight: 600, minWidth: '40px', textAlign: 'right', color: isDark ? '#cbd5e1' : '#334155' }}>
@@ -1495,12 +1699,12 @@ export default function AdminConsolePage() {
                       {/* PWA App Name */}
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                         <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>PWA Application Name</label>
-                        <input 
-                          type="text" 
-                          value={branding.pwa_name || ''} 
-                          onChange={e => setBranding({...branding, pwa_name: e.target.value})} 
+                        <input
+                          type="text"
+                          value={branding.pwa_name || ''}
+                          onChange={e => setBranding({...branding, pwa_name: e.target.value})}
                           placeholder={`Fallback: ${branding.app_name || 'HARTEK CMD Office'}`}
-                          style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} 
+                          style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
                         />
                         <span style={{ fontSize: '11px', color: '#64748b' }}>Full name displayed on PWA installation prompt and launcher. (If empty, uses Dashboard App Name).</span>
                       </div>
@@ -1508,12 +1712,12 @@ export default function AdminConsolePage() {
                       {/* PWA Short Name */}
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                         <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>PWA Short Name</label>
-                        <input 
-                          type="text" 
-                          value={branding.pwa_short_name || ''} 
-                          onChange={e => setBranding({...branding, pwa_short_name: e.target.value})} 
+                        <input
+                          type="text"
+                          value={branding.pwa_short_name || ''}
+                          onChange={e => setBranding({...branding, pwa_short_name: e.target.value})}
                           placeholder="e.g. HARTEK CMD"
-                          style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} 
+                          style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
                         />
                         <span style={{ fontSize: '11px', color: '#64748b' }}>Short label used under home screen app icon. (If empty, derived automatically).</span>
                       </div>
@@ -1521,21 +1725,21 @@ export default function AdminConsolePage() {
                       {/* PWA Description */}
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                         <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>PWA Description</label>
-                        <textarea 
+                        <textarea
                           rows={2}
-                          value={branding.pwa_description || ''} 
-                          onChange={e => setBranding({...branding, pwa_description: e.target.value})} 
+                          value={branding.pwa_description || ''}
+                          onChange={e => setBranding({...branding, pwa_description: e.target.value})}
                           placeholder={`Fallback: ${branding.app_subtitle || 'HARTEK Group CMD Office Command Center'}`}
-                          style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} 
+                          style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
                         />
                       </div>
 
                       {/* PWA Icon Selection Options */}
                       <div style={{ border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '8px', padding: '14px', background: isDark ? '#0f172a' : '#f8fafc', display: 'flex', flexDirection: 'column', gap: '12px' }}>
                         <label style={{ fontWeight: 700, fontSize: '13px', color: isDark ? '#3b82f6' : '#1e293b' }}>PWA Icon Selection Source</label>
-                        
-                        <select 
-                          value={branding.pwa_icon_type || 'branding'} 
+
+                        <select
+                          value={branding.pwa_icon_type || 'branding'}
                           onChange={e => setBranding({...branding, pwa_icon_type: e.target.value})}
                           style={{ padding: '8px 12px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#1e293b' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
                         >
@@ -1556,12 +1760,12 @@ export default function AdminConsolePage() {
                         {branding.pwa_icon_type === 'url' && (
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '4px' }}>
                             <label style={{ fontWeight: 600, fontSize: '11px', color: isDark ? '#cbd5e1' : '#475569' }}>PWA Icon Web Link / URL</label>
-                            <input 
-                              type="url" 
-                              placeholder="https://example.com/assets/app-icon.png" 
-                              value={branding.pwa_icon || ''} 
+                            <input
+                              type="url"
+                              placeholder="https://example.com/assets/app-icon.png"
+                              value={branding.pwa_icon || ''}
                               onChange={e => setBranding({...branding, pwa_icon: e.target.value})}
-                              style={{ padding: '8px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#1e293b' : '#fff', color: isDark ? '#fff' : '#0f172a' }} 
+                              style={{ padding: '8px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#1e293b' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
                             />
                           </div>
                         )}
@@ -1586,8 +1790,8 @@ export default function AdminConsolePage() {
                             </div>
                           </div>
                           {branding.pwa_icon && (
-                            <button 
-                              type="button" 
+                            <button
+                              type="button"
                               onClick={() => setBranding({...branding, pwa_icon: '', pwa_icon_type: 'branding'})}
                               style={{ padding: '6px 10px', background: '#fee2e2', color: '#ef4444', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '11px', fontWeight: 600 }}
                             >
@@ -1602,17 +1806,17 @@ export default function AdminConsolePage() {
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                           <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>PWA Theme Color</label>
                           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                            <input 
-                              type="color" 
-                              value={branding.pwa_theme_color || branding.primary_color || '#0f2a4a'} 
-                              onChange={e => setBranding({...branding, pwa_theme_color: e.target.value})} 
-                              style={{ padding: '2px', width: '36px', height: '36px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', cursor: 'pointer', background: 'transparent' }} 
+                            <input
+                              type="color"
+                              value={branding.pwa_theme_color || branding.primary_color || '#0f2a4a'}
+                              onChange={e => setBranding({...branding, pwa_theme_color: e.target.value})}
+                              style={{ padding: '2px', width: '36px', height: '36px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', cursor: 'pointer', background: 'transparent' }}
                             />
-                            <input 
-                              type="text" 
-                              value={branding.pwa_theme_color || branding.primary_color || '#0f2a4a'} 
-                              onChange={e => setBranding({...branding, pwa_theme_color: e.target.value})} 
-                              style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', flex: 1, background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} 
+                            <input
+                              type="text"
+                              value={branding.pwa_theme_color || branding.primary_color || '#0f2a4a'}
+                              onChange={e => setBranding({...branding, pwa_theme_color: e.target.value})}
+                              style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', flex: 1, background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
                             />
                           </div>
                         </div>
@@ -1620,17 +1824,17 @@ export default function AdminConsolePage() {
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                           <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>PWA Background Color</label>
                           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                            <input 
-                              type="color" 
-                              value={branding.pwa_background_color || branding.login_bg_color || '#0f2a4a'} 
-                              onChange={e => setBranding({...branding, pwa_background_color: e.target.value})} 
-                              style={{ padding: '2px', width: '36px', height: '36px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', cursor: 'pointer', background: 'transparent' }} 
+                            <input
+                              type="color"
+                              value={branding.pwa_background_color || branding.login_bg_color || '#0f2a4a'}
+                              onChange={e => setBranding({...branding, pwa_background_color: e.target.value})}
+                              style={{ padding: '2px', width: '36px', height: '36px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', cursor: 'pointer', background: 'transparent' }}
                             />
-                            <input 
-                              type="text" 
-                              value={branding.pwa_background_color || branding.login_bg_color || '#0f2a4a'} 
-                              onChange={e => setBranding({...branding, pwa_background_color: e.target.value})} 
-                              style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', flex: 1, background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }} 
+                            <input
+                              type="text"
+                              value={branding.pwa_background_color || branding.login_bg_color || '#0f2a4a'}
+                              onChange={e => setBranding({...branding, pwa_background_color: e.target.value})}
+                              style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', flex: 1, background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
                             />
                           </div>
                         </div>
@@ -1640,8 +1844,8 @@ export default function AdminConsolePage() {
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                           <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>Display Mode</label>
-                          <select 
-                            value={branding.pwa_display || 'standalone'} 
+                          <select
+                            value={branding.pwa_display || 'standalone'}
                             onChange={e => setBranding({...branding, pwa_display: e.target.value})}
                             style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
                           >
@@ -1654,8 +1858,8 @@ export default function AdminConsolePage() {
 
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                           <label style={{ fontWeight: 600, fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155' }}>Screen Orientation</label>
-                          <select 
-                            value={branding.pwa_orientation || 'portrait-primary'} 
+                          <select
+                            value={branding.pwa_orientation || 'portrait-primary'}
                             onChange={e => setBranding({...branding, pwa_orientation: e.target.value})}
                             style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
                           >
@@ -1667,8 +1871,8 @@ export default function AdminConsolePage() {
                       </div>
 
                       <div style={{ display: 'flex', justifyContent: 'flex-start', marginTop: '6px' }}>
-                        <button 
-                          type="button" 
+                        <button
+                          type="button"
                           onClick={() => {
                             setBranding((prev: any) => ({
                               ...prev,
@@ -1708,9 +1912,9 @@ export default function AdminConsolePage() {
                   <h2 style={{ fontSize: '20px', fontWeight: 700, margin: 0, color: isDark ? '#3b82f6' : 'var(--navy)' }}>Registered Staff Accounts</h2>
                   <p style={{ fontSize: '13px', color: isDark ? '#94a3b8' : '#64748b', margin: '4px 0 0 0' }}>Configure credentials, roles, and supervisor reporting lines.</p>
                 </div>
-                <button 
+                <button
                   onClick={() => {
-                    setUserForm({ id: '', email: '', name: '', password: '', roleId: '', managerId: '', active: true, immuneFromEscalation: false });
+                    setUserForm({ id: '', email: '', name: '', password: '', roleId: '', managerId: '', active: true });
                     setShowUserModal(true);
                   }}
                   style={{ padding: '10px 16px', background: branding.primary_color || 'var(--navy)', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 700, fontSize: '13px', boxShadow: '0 4px 10px rgba(15,42,74,0.15)' }}
@@ -1733,7 +1937,7 @@ export default function AdminConsolePage() {
                   <tbody>
                     {users.map(u => {
                       const roleName = u.role ? u.role.name : 'No Role Assigned';
-                      
+
                       // Safeguards check
                       const activeAdmins = users.filter(usr => usr.active && usr.role?.name === 'Admin');
                       const isLastAdmin = roleName === 'Admin' && activeAdmins.length <= 1;
@@ -1758,10 +1962,10 @@ export default function AdminConsolePage() {
                           <td style={{ padding: '16px 12px', verticalAlign: 'middle' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                               <div style={{ width: '38px', height: '38px', borderRadius: '50%', overflow: 'hidden', background: isDark ? '#0f172a' : '#e2e8f0', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                <img 
-                                  src={`https://ui-avatars.com/api/?name=${encodeURIComponent(u.name)}&background=random&color=fff&bold=true`} 
+                                <img
+                                  src={`https://ui-avatars.com/api/?name=${encodeURIComponent(u.name)}&background=random&color=fff&bold=true`}
                                   alt={u.name}
-                                  style={{ width: '100%', height: '100%', objectFit: 'cover' }} 
+                                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                                 />
                               </div>
                               <div>
@@ -1780,7 +1984,7 @@ export default function AdminConsolePage() {
                           </td>
                           <td style={{ padding: '16px 12px', verticalAlign: 'middle', textAlign: 'right' }}>
                             <div style={{ display: 'flex', gap: '16px', justifyContent: 'flex-end', alignItems: 'center' }}>
-                              <button 
+                              <button
                                 onClick={() => {
                                   setUserForm({
                                     id: u.id,
@@ -1790,42 +1994,41 @@ export default function AdminConsolePage() {
                                     roleId: u.roleId || u.role?.id || '',
                                     managerId: u.managerId || u.manager?.id || '',
                                     active: u.active,
-                                    immuneFromEscalation: u.immuneFromEscalation || false,
                                   });
                                   setShowUserModal(true);
                                 }}
-                                style={{ 
-                                  background: 'none', 
-                                  border: 'none', 
-                                  color: isDark ? '#3b82f6' : 'var(--navy)', 
-                                  cursor: 'pointer', 
-                                  fontSize: '13px', 
-                                  display: 'flex', 
-                                  alignItems: 'center', 
+                                style={{
+                                  background: 'none',
+                                  border: 'none',
+                                  color: isDark ? '#3b82f6' : 'var(--navy)',
+                                  cursor: 'pointer',
+                                  fontSize: '13px',
+                                  display: 'flex',
+                                  alignItems: 'center',
                                   gap: '6px',
                                   fontWeight: 600
                                 }}
                               >
                                 <span style={{ fontSize: '14px' }}>✏️</span> Edit User
                               </button>
-                              <button 
+                              <button
                                 onClick={disableDelete ? undefined : () => handleToggleUserActive(u)}
                                 disabled={disableDelete}
                                 title={
-                                  isSelf 
-                                    ? "You cannot disable your own logged-in account." 
-                                    : isLastAdmin 
-                                      ? "Cannot disable the only remaining active administrator account." 
+                                  isSelf
+                                    ? "You cannot disable your own logged-in account."
+                                    : isLastAdmin
+                                      ? "Cannot disable the only remaining active administrator account."
                                       : (u.active ? "Disable user access" : "Enable user access")
                                 }
-                                style={{ 
-                                  background: 'none', 
-                                  border: 'none', 
-                                  color: disableDelete ? (isDark ? '#4b5563' : '#cbd5e1') : (u.active ? '#ef4444' : '#10b981'), 
-                                  cursor: disableDelete ? 'not-allowed' : 'pointer', 
-                                  fontSize: '13px', 
-                                  display: 'flex', 
-                                  alignItems: 'center', 
+                                style={{
+                                  background: 'none',
+                                  border: 'none',
+                                  color: disableDelete ? (isDark ? '#4b5563' : '#cbd5e1') : (u.active ? '#ef4444' : '#10b981'),
+                                  cursor: disableDelete ? 'not-allowed' : 'pointer',
+                                  fontSize: '13px',
+                                  display: 'flex',
+                                  alignItems: 'center',
                                   gap: '6px',
                                   fontWeight: 600
                                 }}
@@ -1851,7 +2054,7 @@ export default function AdminConsolePage() {
                   <h2 style={{ fontSize: '20px', fontWeight: 700, margin: 0, color: isDark ? '#3b82f6' : 'var(--navy)' }}>Access Roles & Authorization Matrix</h2>
                   <p style={{ fontSize: '13px', color: isDark ? '#94a3b8' : '#64748b', margin: '4px 0 0 0' }}>Manage access control levels. Tabs set to hidden will be restricted from users assigned to the respective role.</p>
                 </div>
-                <button 
+                <button
                   onClick={() => {
                     setRoleForm({ id: '', name: '' });
                     setShowRoleModal(true);
@@ -1870,7 +2073,7 @@ export default function AdminConsolePage() {
                   const userCount = users.filter((u: any) => u.roleId === r.id).length;
 
                   return (
-                    <div 
+                    <div
                       key={r.id}
                       onClick={() => {
                         setSelectedRole(r);
@@ -1879,8 +2082,8 @@ export default function AdminConsolePage() {
                       style={{
                         padding: '18px',
                         background: isDark ? '#1e293b' : '#fff',
-                        border: isSelected 
-                          ? `2px solid ${branding.primary_color || 'var(--navy)'}` 
+                        border: isSelected
+                          ? `2px solid ${branding.primary_color || 'var(--navy)'}`
                           : (isDark ? '1px solid #334155' : '1px solid #cbd5e1'),
                         borderRadius: '12px',
                         cursor: 'pointer',
@@ -1920,17 +2123,17 @@ export default function AdminConsolePage() {
                             setRoleForm({ id: r.id, name: r.name });
                             setShowRoleModal(true);
                           }}
-                          style={{ 
-                            background: 'none', 
-                            border: 'none', 
-                            color: (r.name === 'Admin') 
-                              ? (isDark ? '#475569' : '#94a3b8') 
-                              : (isDark ? '#cbd5e1' : '#4b5563'), 
-                            cursor: (r.name === 'Admin') ? 'not-allowed' : 'pointer', 
-                            fontSize: '12px', 
-                            display: 'flex', 
-                            alignItems: 'center', 
-                            gap: '4px', 
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: (r.name === 'Admin')
+                              ? (isDark ? '#475569' : '#94a3b8')
+                              : (isDark ? '#cbd5e1' : '#4b5563'),
+                            cursor: (r.name === 'Admin') ? 'not-allowed' : 'pointer',
+                            fontSize: '12px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
                             fontWeight: 600,
                             opacity: (r.name === 'Admin') ? 0.5 : 1
                           }}
@@ -1948,17 +2151,17 @@ export default function AdminConsolePage() {
                             }
                             handleRoleDelete(r.id);
                           }}
-                          style={{ 
-                            background: 'none', 
-                            border: 'none', 
-                            color: (r.name === 'Admin') 
-                              ? (isDark ? '#475569' : '#94a3b8') 
-                              : '#ef4444', 
-                            cursor: (r.name === 'Admin') ? 'not-allowed' : 'pointer', 
-                            fontSize: '12px', 
-                            display: 'flex', 
-                            alignItems: 'center', 
-                            gap: '4px', 
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: (r.name === 'Admin')
+                              ? (isDark ? '#475569' : '#94a3b8')
+                              : '#ef4444',
+                            cursor: (r.name === 'Admin') ? 'not-allowed' : 'pointer',
+                            fontSize: '12px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px',
                             fontWeight: 600,
                             opacity: (r.name === 'Admin') ? 0.5 : 1
                           }}
@@ -2056,16 +2259,16 @@ export default function AdminConsolePage() {
 
                   <div style={{ border: isDark ? '1px solid #334155' : '1px solid #e2e8f0', borderRadius: '8px', padding: '16px', background: isDark ? '#0f172a' : '#f8fafc', display: 'flex', flexDirection: 'column', gap: '10px' }}>
                     <label style={{ fontSize: '12px', fontWeight: 700, color: isDark ? '#cbd5e1' : '#1e293b' }}>Recipient Email Address</label>
-                    <input 
-                      type="email" 
-                      placeholder="test@example.com" 
+                    <input
+                      type="email"
+                      placeholder="test@example.com"
                       value={testEmailRecipient}
                       onChange={e => setTestEmailRecipient(e.target.value)}
-                      style={{ padding: '10px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#1e293b' : '#fff', color: isDark ? '#fff' : '#1e293b' }} 
+                      style={{ padding: '10px', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '13px', background: isDark ? '#1e293b' : '#fff', color: isDark ? '#fff' : '#1e293b' }}
                     />
-                    <button 
-                      type="button" 
-                      onClick={handleSendTestEmail} 
+                    <button
+                      type="button"
+                      onClick={handleSendTestEmail}
                       disabled={sendingTestEmail}
                       style={{ padding: '10px 14px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 700, fontSize: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', transition: 'all 0.15s ease' }}
                     >
@@ -2134,15 +2337,15 @@ export default function AdminConsolePage() {
               <div style={{ display: 'flex', gap: '12px', marginBottom: '20px', flexWrap: 'wrap', alignItems: 'center' }}>
                 <div style={{ position: 'relative', flex: 1, minWidth: '240px' }}>
                   <FaSearch style={{ position: 'absolute', left: '12px', top: '12px', color: isDark ? '#475569' : '#94a3b8' }} />
-                  <input 
-                    type="text" 
+                  <input
+                    type="text"
                     placeholder={auditTabSubMode === 'sessions' ? "Search by name, email, or Session unique ID..." : "Search activities by action, name, or detail..."}
                     value={sessionSearch}
                     onChange={e => setSessionSearch(e.target.value)}
                     style={{ width: '100%', padding: '10px 10px 10px 36px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '8px', fontSize: '13px', background: isDark ? '#1e293b' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
                   />
                 </div>
-                
+
                 {auditTabSubMode === 'sessions' && (
                   <div style={{ display: 'flex', gap: '4px', background: isDark ? '#1e293b' : '#f1f5f9', padding: '4px', borderRadius: '8px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1' }}>
                     <button type="button" onClick={() => setSessionFilter('all')} style={{ padding: '6px 12px', border: 'none', background: sessionFilter === 'all' ? (branding.primary_color || 'var(--navy)') : 'transparent', color: sessionFilter === 'all' ? '#fff' : (isDark ? '#cbd5e1' : '#475569'), fontSize: '12px', fontWeight: 700, borderRadius: '6px', cursor: 'pointer' }}>All Logs</button>
@@ -2173,8 +2376,8 @@ export default function AdminConsolePage() {
                           return matchesSearch;
                         })
                         .map(log => (
-                          <tr 
-                            key={log.id} 
+                          <tr
+                            key={log.id}
                             onClick={() => setSelectedSessionLog(log)}
                             style={{ borderBottom: isDark ? '1px solid #334155' : '1px solid #f1f5f9', background: isDark ? '#1e293b' : '#fff', cursor: 'pointer', transition: 'all 0.15s' }}
                             onMouseEnter={e => e.currentTarget.style.background = isDark ? '#0f172a' : '#f8fafc'}
@@ -2242,8 +2445,8 @@ export default function AdminConsolePage() {
                           const timePart = formatted.split(', ')[1];
 
                           return (
-                            <tr 
-                              key={log.id} 
+                            <tr
+                              key={log.id}
                               onClick={() => setSelectedAuditLog(log)}
                               style={{ borderBottom: isDark ? '1px solid #334155' : '1px solid #f1f5f9', background: isDark ? '#1e293b' : '#fff', cursor: 'pointer', transition: 'all 0.15s' }}
                               onMouseEnter={e => e.currentTarget.style.background = isDark ? '#0f172a' : '#f8fafc'}
@@ -2290,6 +2493,398 @@ export default function AdminConsolePage() {
           {activeTab === 'email-templates' && (
             <EmailTemplatesAdmin isDark={isDark} showToast={showToast} />
           )}
+
+          {/* TAB: SYSTEM CONFIGURATION & ATTACHMENT SETTINGS */}
+          {activeTab === 'configuration' && (
+            <div>
+              {/* Header */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', flexWrap: 'wrap', gap: '16px' }}>
+                <div>
+                  <h2 style={{ fontSize: '20px', fontWeight: 700, margin: 0, color: isDark ? '#3b82f6' : (branding.primary_color || 'var(--navy)'), display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <FaTools /> System Configuration
+                  </h2>
+                  <p style={{ fontSize: '13px', color: isDark ? '#94a3b8' : '#64748b', margin: '4px 0 0 0' }}>
+                    Manage enterprise upload boundaries, operational document parameters, and storage thresholds.
+                  </p>
+                </div>
+
+                {/* Sub-navigation tabs */}
+                <div style={{ display: 'flex', gap: '8px', background: isDark ? '#0f172a' : '#e2e8f0', padding: '4px', borderRadius: '8px' }}>
+                  <button
+                    type="button"
+                    onClick={() => setSubConfigTab('attachments')}
+                    style={{
+                      padding: '8px 16px',
+                      borderRadius: '6px',
+                      border: 'none',
+                      fontSize: '13px',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      background: subConfigTab === 'attachments' ? (isDark ? '#3b82f6' : '#fff') : 'transparent',
+                      color: subConfigTab === 'attachments' ? (isDark ? '#fff' : '#0f172a') : (isDark ? '#94a3b8' : '#64748b'),
+                      boxShadow: subConfigTab === 'attachments' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      transition: 'all 0.15s',
+                    }}
+                  >
+                    <FaPaperclip /> Document & Attachment Settings
+                  </button>
+                </div>
+              </div>
+
+              {subConfigTab === 'attachments' && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: '24px', alignItems: 'start' }}>
+                  {/* Left Column: Form & Presets Card */}
+                  <div style={{ background: isDark ? '#1e293b' : '#fff', border: isDark ? '1px solid #334155' : '1px solid #e2e8f0', borderRadius: '12px', padding: '24px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.05)', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                    {/* Card Title & Status Badges */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '10px', borderBottom: isDark ? '1px solid #334155' : '1px solid #f1f5f9', paddingBottom: '16px' }}>
+                      <div>
+                        <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: isDark ? '#3b82f6' : 'var(--navy)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <FaFileAlt /> Maximum Attachment Size
+                        </h3>
+                        <p style={{ margin: '4px 0 0 0', fontSize: '12px', color: isDark ? '#94a3b8' : '#64748b' }}>
+                          Define the maximum allowed file size per uploaded document across all modules.
+                        </p>
+                      </div>
+
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                        <span style={{
+                          padding: '4px 10px',
+                          borderRadius: '12px',
+                          fontSize: '11px',
+                          fontWeight: 700,
+                          background: isDark ? '#0f172a' : '#f1f5f9',
+                          color: isDark ? '#cbd5e1' : '#334155',
+                          border: isDark ? '1px solid #334155' : '1px solid #cbd5e1'
+                        }}>
+                          Saved: <strong>{savedAttachmentSizeMb} MB</strong>
+                        </span>
+
+                        {attachmentSizeMb.trim() !== savedAttachmentSizeMb ? (
+                          <span style={{
+                            padding: '4px 10px',
+                            borderRadius: '12px',
+                            fontSize: '11px',
+                            fontWeight: 700,
+                            background: '#fef3c7',
+                            color: '#92400e',
+                            border: '1px solid #fcd34d',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px'
+                          }}>
+                            <FaExclamationTriangle /> Unsaved changes ({savedAttachmentSizeMb} MB → {attachmentSizeMb} MB)
+                          </span>
+                        ) : (
+                          <span style={{
+                            padding: '4px 10px',
+                            borderRadius: '12px',
+                            fontSize: '11px',
+                            fontWeight: 700,
+                            background: '#dcfce7',
+                            color: '#166534',
+                            border: '1px solid #86efac',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px'
+                          }}>
+                            <FaCheck /> Saved ({savedAttachmentSizeMb} MB)
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Form Controls */}
+                    <form onSubmit={handleSaveAttachmentConfig} style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        <label style={{ fontSize: '13px', fontWeight: 600, color: isDark ? '#cbd5e1' : '#334155' }}>
+                          Maximum permitted file size <span style={{ color: '#ef4444' }}>*</span>
+                        </label>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                          <input
+                            type="number"
+                            min="1"
+                            max="35"
+                            step="1"
+                            value={attachmentSizeMb}
+                            onChange={(e) => handleAttachmentSizeChange(e.target.value)}
+                            style={{
+                              padding: '10px 14px',
+                              border: attachmentSizeError ? '2px solid #ef4444' : (isDark ? '1px solid #334155' : '1px solid #cbd5e1'),
+                              borderRadius: '8px',
+                              fontSize: '16px',
+                              fontWeight: 700,
+                              background: isDark ? '#0f172a' : '#fff',
+                              color: isDark ? '#fff' : '#0f172a',
+                              width: '140px',
+                              textAlign: 'center'
+                            }}
+                          />
+                          <span style={{ fontSize: '15px', fontWeight: 700, color: isDark ? '#94a3b8' : '#475569' }}>
+                            MB (Megabytes)
+                          </span>
+                        </div>
+                        <span style={{ fontSize: '11px', color: isDark ? '#94a3b8' : '#64748b' }}>
+                          Valid input range: <strong>1 MB</strong> to <strong>35 MB</strong>. (Bounded by the 50 MB server body limit; 35 MB raw expands to ~47 MB Base64).
+                        </span>
+                      </div>
+
+                      {/* Error Banner */}
+                      {attachmentSizeError && (
+                        <div style={{
+                          padding: '10px 14px',
+                          borderRadius: '8px',
+                          background: '#fee2e2',
+                          border: '1px solid #fca5a5',
+                          color: '#991b1b',
+                          fontSize: '12px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px'
+                        }}>
+                          <FaTimes style={{ flexShrink: 0 }} />
+                          <span>{attachmentSizeError}</span>
+                        </div>
+                      )}
+
+                      {/* Dynamic Infrastructure Capacity Card */}
+                      {(() => {
+                        const val = parseInt(attachmentSizeMb || '10', 10);
+                        if (isNaN(val) || val <= 0) return null;
+                        if (val <= 35) {
+                          return (
+                            <div style={{
+                              padding: '10px 14px',
+                              borderRadius: '8px',
+                              background: isDark ? '#064e3b' : '#dcfce7',
+                              border: isDark ? '1px solid #059669' : '1px solid #86efac',
+                              color: isDark ? '#6ee7b7' : '#166534',
+                              fontSize: '12px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '8px'
+                            }}>
+                              <FaCheck style={{ flexShrink: 0 }} />
+                              <span><strong>Fully Supported:</strong> Fits within current Base64 JSON payload architecture and 50 MB server body limit (35 MB raw expands to ~47 MB Base64).</span>
+                            </div>
+                          );
+                        }
+                        return null;
+                      })()}
+
+                      {/* Preset Buttons */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        <label style={{ fontSize: '12px', fontWeight: 600, color: isDark ? '#94a3b8' : '#64748b' }}>
+                          Quick Selection Presets:
+                        </label>
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                          {[
+                            { mb: 5, label: '5 MB (Compact)' },
+                            { mb: 10, label: '10 MB (Default)' },
+                            { mb: 20, label: '20 MB (Medium)' },
+                            { mb: 25, label: '25 MB (Standard)' },
+                            { mb: 35, label: '35 MB (Max Inline Ceiling)' },
+                          ].map((preset) => {
+                            const isSelected = attachmentSizeMb.trim() === String(preset.mb);
+                            return (
+                              <button
+                                key={preset.mb}
+                                type="button"
+                                onClick={() => handlePresetSelect(preset.mb)}
+                                style={{
+                                  padding: '6px 12px',
+                                  borderRadius: '6px',
+                                  fontSize: '12px',
+                                  fontWeight: isSelected ? 700 : 500,
+                                  cursor: 'pointer',
+                                  border: isSelected
+                                    ? '1px solid #2563eb'
+                                    : (isDark ? '1px solid #334155' : '1px solid #e2e8f0'),
+                                  background: isSelected
+                                    ? (isDark ? '#1e3a8a' : '#dbeafe')
+                                    : (isDark ? '#0f172a' : '#f8fafc'),
+                                  color: isSelected
+                                    ? (isDark ? '#93c5fd' : '#1d4ed8')
+                                    : (isDark ? '#cbd5e1' : '#475569'),
+                                  transition: 'all 0.15s',
+                                }}
+                              >
+                                {preset.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Important Operational Policy Notice */}
+                      <div style={{
+                        padding: '12px 16px',
+                        borderRadius: '8px',
+                        background: isDark ? '#0f172a' : '#f0f9ff',
+                        border: isDark ? '1px solid #1e3a8a' : '1px solid #bae6fd',
+                        fontSize: '12px',
+                        color: isDark ? '#93c5fd' : '#0369a1',
+                        lineHeight: 1.5
+                      }}>
+                        <strong>Operational Notice:</strong> Changing this setting dynamically updates upload validation for all users. It immediately governs all future uploads. Previously saved documents and attachments remain securely archived and are not modified or truncated.
+                      </div>
+
+                      {/* Action Buttons Row */}
+                      <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '6px' }}>
+                        <button
+                          type="submit"
+                          disabled={
+                            isSavingAttachmentConfig ||
+                            !!attachmentSizeError ||
+                            attachmentSizeMb.trim() === savedAttachmentSizeMb
+                          }
+                          style={{
+                            padding: '11px 22px',
+                            background: (isSavingAttachmentConfig || !!attachmentSizeError || attachmentSizeMb.trim() === savedAttachmentSizeMb)
+                              ? (isDark ? '#334155' : '#94a3b8')
+                              : (branding.primary_color || 'var(--navy)'),
+                            color: '#fff',
+                            border: 'none',
+                            borderRadius: '8px',
+                            fontWeight: 700,
+                            fontSize: '13px',
+                            cursor: (isSavingAttachmentConfig || !!attachmentSizeError || attachmentSizeMb.trim() === savedAttachmentSizeMb) ? 'not-allowed' : 'pointer',
+                            boxShadow: '0 4px 10px rgba(0,0,0,0.1)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            transition: 'all 0.15s'
+                          }}
+                        >
+                          {isSavingAttachmentConfig ? <FaSpinner className="spin" /> : <FaSave />}
+                          {isSavingAttachmentConfig ? 'Saving Settings...' : 'Save Changes'}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleResetAttachmentConfig}
+                          disabled={attachmentSizeMb.trim() === savedAttachmentSizeMb || isSavingAttachmentConfig}
+                          style={{
+                            padding: '11px 18px',
+                            background: isDark ? '#0f172a' : '#fff',
+                            color: isDark ? '#cbd5e1' : '#475569',
+                            border: isDark ? '1px solid #334155' : '1px solid #cbd5e1',
+                            borderRadius: '8px',
+                            fontWeight: 600,
+                            fontSize: '13px',
+                            cursor: (attachmentSizeMb.trim() === savedAttachmentSizeMb || isSavingAttachmentConfig) ? 'not-allowed' : 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            opacity: (attachmentSizeMb.trim() === savedAttachmentSizeMb || isSavingAttachmentConfig) ? 0.6 : 1,
+                            transition: 'all 0.15s'
+                          }}
+                        >
+                          <FaUndo /> Reset Form
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleReloadAttachmentConfig}
+                          disabled={isReloadingAttachmentConfig || isSavingAttachmentConfig}
+                          style={{
+                            padding: '11px 18px',
+                            background: isDark ? '#0f172a' : '#fff',
+                            color: isDark ? '#cbd5e1' : '#475569',
+                            border: isDark ? '1px solid #334155' : '1px solid #cbd5e1',
+                            borderRadius: '8px',
+                            fontWeight: 600,
+                            fontSize: '13px',
+                            cursor: (isReloadingAttachmentConfig || isSavingAttachmentConfig) ? 'not-allowed' : 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            transition: 'all 0.15s'
+                          }}
+                          title="Fetch latest value from PostgreSQL database"
+                        >
+                          {isReloadingAttachmentConfig ? <FaSpinner className="spin" /> : <FaSyncAlt />}
+                          {isReloadingAttachmentConfig ? 'Reloading...' : 'Reload from Server'}
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+
+                  {/* Right Column: Policies & Verification Cards */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+                    {/* Enforcement Scope Card */}
+                    <div style={{ background: isDark ? '#1e293b' : '#fff', border: isDark ? '1px solid #334155' : '1px solid #e2e8f0', borderRadius: '12px', padding: '24px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.05)' }}>
+                      <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: isDark ? '#3b82f6' : 'var(--navy)', borderBottom: isDark ? '1px solid #334155' : '1px solid #f1f5f9', paddingBottom: '8px', marginBottom: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <FaShieldAlt /> Protected Upload Pathways
+                      </h3>
+                      <p style={{ margin: '0 0 12px 0', fontSize: '12px', color: isDark ? '#94a3b8' : '#64748b' }}>
+                        The limit of <strong>{savedAttachmentSizeMb} MB</strong> is enforced server-side and client-side across all upload avenues:
+                      </p>
+                      <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '12px', color: isDark ? '#cbd5e1' : '#334155', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        <li><strong>Projects & Contracts</strong> — Blueprints, work orders, site documents (<code>/projects</code>)</li>
+                        <li><strong>Task Directives</strong> — Briefs, execution files, assigned assets (<code>/tasks</code>)</li>
+                        <li><strong>Meeting Minutes & MOM</strong> — Agenda documents, audio/transcripts, meeting notes (<code>/meetings</code>)</li>
+                        <li><strong>Action Items & Escalations</strong> — Incident reports, urgency attachments (<code>/action-items</code>, <code>/escalations</code>)</li>
+                        <li><strong>Follow-up Records</strong> — BU correspondence and progress proofs (<code>/follow-ups</code>)</li>
+                        <li><strong>Legal Cases & MIS Sync</strong> — Court filings, petitions, monthly MIS CSV sheets (<code>/legal-cases</code>)</li>
+                        <li><strong>Personal Notepad</strong> — Note attached reference images (<code>/notepad</code>)</li>
+                      </ul>
+                    </div>
+
+                    {/* Infrastructure Architecture Notice Card */}
+                    <div style={{ background: isDark ? '#1e293b' : '#fff', border: isDark ? '1px solid #334155' : '1px solid #e2e8f0', borderRadius: '12px', padding: '20px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.05)' }}>
+                      <h4 style={{ margin: 0, fontSize: '13px', fontWeight: 700, color: isDark ? '#cbd5e1' : '#334155', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <FaServer /> Infrastructure Alignment (VPS & Proxy)
+                      </h4>
+                      <p style={{ margin: '8px 0 0 0', fontSize: '12px', color: isDark ? '#94a3b8' : '#64748b', lineHeight: 1.5 }}>
+                        Application policy limits up to 9999 MB are safely accepted and stored. Active inline transport is bounded by VPS infrastructure:
+                      </p>
+                      <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '11px', fontFamily: 'monospace', color: isDark ? '#93c5fd' : '#1e40af' }}>
+                        <span>• Nginx reverse proxy: <code>client_max_body_size 50M;</code> (nginx/cmd-dashboard.conf)</span>
+                        <span>• Express HTTP body parser: <code>express.json(&#123; limit: '50mb' &#125;)</code> (backend/src/main.ts)</span>
+                        <span>• Base64 Transport ceiling: <strong>35 MB raw file</strong> (4/3 inflation = ~47 MB HTTP payload)</span>
+                        <span>• Multi-GB requirements: Uploads &gt; 50 MB require VPS Nginx update + external S3 streaming</span>
+                      </div>
+                    </div>
+
+                    {/* Live File Size Tester */}
+                    <div style={{ background: isDark ? '#1e293b' : '#fff', border: isDark ? '1px solid #334155' : '1px solid #e2e8f0', borderRadius: '12px', padding: '20px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.05)' }}>
+                      <h4 style={{ margin: 0, fontSize: '13px', fontWeight: 700, color: isDark ? '#cbd5e1' : '#334155', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <FaSlidersH /> Safe Local File Limit Tester
+                      </h4>
+                      <p style={{ margin: '6px 0 10px 0', fontSize: '12px', color: isDark ? '#94a3b8' : '#64748b' }}>
+                        Select any test file from your device to verify whether it complies with the active <strong>{savedAttachmentSizeMb} MB</strong> limit.
+                      </p>
+                      <input
+                        type="file"
+                        onChange={handleTestFileUpload}
+                        style={{ fontSize: '12px', color: isDark ? '#cbd5e1' : '#475569' }}
+                      />
+                      {testFileResult && (
+                        <div style={{
+                          marginTop: '12px',
+                          padding: '10px 14px',
+                          borderRadius: '8px',
+                          fontSize: '12px',
+                          background: testFileResult.allowed ? (isDark ? '#064e3b' : '#dcfce7') : (isDark ? '#7f1d1d' : '#fee2e2'),
+                          color: testFileResult.allowed ? (isDark ? '#6ee7b7' : '#166534') : (isDark ? '#fca5a5' : '#991b1b'),
+                          border: testFileResult.allowed ? '1px solid #86efac' : '1px solid #fca5a5',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px'
+                        }}>
+                          {testFileResult.allowed ? <FaCheck /> : <FaTimes />}
+                          <span>{testFileResult.message}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           </div>
         </main>
       </div>
@@ -2304,10 +2899,10 @@ export default function AdminConsolePage() {
             <form onSubmit={handleUserSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <label style={{ fontSize: '12px', fontWeight: 600, color: isDark ? '#cbd5e1' : '#334155' }}>Full Name <span style={{ color: 'red' }}>*</span></label>
-                <input 
-                  type="text" 
-                  value={userForm.name} 
-                  onChange={e => setUserForm({...userForm, name: e.target.value})} 
+                <input
+                  type="text"
+                  value={userForm.name}
+                  onChange={e => setUserForm({...userForm, name: e.target.value})}
                   placeholder="Enter full name"
                   required
                   style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
@@ -2315,10 +2910,10 @@ export default function AdminConsolePage() {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <label style={{ fontSize: '12px', fontWeight: 600, color: isDark ? '#cbd5e1' : '#334155' }}>Email Address <span style={{ color: 'red' }}>*</span></label>
-                <input 
-                  type="email" 
-                  value={userForm.email} 
-                  onChange={e => setUserForm({...userForm, email: e.target.value})} 
+                <input
+                  type="email"
+                  value={userForm.email}
+                  onChange={e => setUserForm({...userForm, email: e.target.value})}
                   placeholder="Enter email address"
                   required
                   readOnly={!!userForm.id}
@@ -2327,10 +2922,10 @@ export default function AdminConsolePage() {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <label style={{ fontSize: '12px', fontWeight: 600, color: isDark ? '#cbd5e1' : '#334155' }}>Password {userForm.id && '(Leave blank to keep unchanged)'}</label>
-                <input 
-                  type="password" 
-                  value={userForm.password} 
-                  onChange={e => setUserForm({...userForm, password: e.target.value})} 
+                <input
+                  type="password"
+                  value={userForm.password}
+                  onChange={e => setUserForm({...userForm, password: e.target.value})}
                   placeholder={userForm.id ? 'Leave blank to keep unchanged' : 'Leave blank to auto-generate temporary password'}
                   required={false}
                   style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
@@ -2338,8 +2933,8 @@ export default function AdminConsolePage() {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <label style={{ fontSize: '12px', fontWeight: 600, color: isDark ? '#cbd5e1' : '#334155' }}>Role Assignment</label>
-                <select 
-                  value={userForm.roleId} 
+                <select
+                  value={userForm.roleId}
                   onChange={e => setUserForm({...userForm, roleId: e.target.value})}
                   style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
                 >
@@ -2353,8 +2948,8 @@ export default function AdminConsolePage() {
               {/* Reports To manager assigner */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <label style={{ fontSize: '12px', fontWeight: 600, color: isDark ? '#cbd5e1' : '#334155' }}>Reports To (Manager)</label>
-                <select 
-                  value={userForm.managerId} 
+                <select
+                  value={userForm.managerId}
                   onChange={e => setUserForm({...userForm, managerId: e.target.value})}
                   style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
                 >
@@ -2369,9 +2964,9 @@ export default function AdminConsolePage() {
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '6px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <input 
-                    type="checkbox" 
-                    checked={userForm.active} 
+                  <input
+                    type="checkbox"
+                    checked={userForm.active}
                     onChange={e => setUserForm({...userForm, active: e.target.checked})}
                     id="user-active-cb"
                     style={{ cursor: 'pointer' }}
@@ -2380,45 +2975,46 @@ export default function AdminConsolePage() {
                     Active Account Status (Login Allowed)
                   </label>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <input 
-                    type="checkbox" 
-                    checked={!!userForm.immuneFromEscalation} 
-                    onChange={e => setUserForm({...userForm, immuneFromEscalation: e.target.checked})}
-                    id="user-immune-cb"
-                    style={{ cursor: 'pointer' }}
-                  />
-                  <label htmlFor="user-immune-cb" style={{ fontSize: '13px', cursor: 'pointer', color: isDark ? '#cbd5e1' : '#334155' }}>
-                    Exempt from Direct Escalation Routing (Immune)
-                  </label>
-                </div>
               </div>
-              
+
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', marginTop: '16px', flexWrap: 'wrap' }}>
                 {userForm.id && (
                   <div style={{ display: 'flex', gap: '8px' }}>
-                    <button 
-                      type="button" 
+                    <button
+                      type="button"
                       onClick={async () => {
                         if (confirm('Are you sure you want to reset this user\'s password to a temporary key and send it via email?')) {
                           try {
                             const res = await api.post(`/users/${userForm.id}/reset-password-temp`);
-                            showToast(res?.message || `Temporary password key generated: ${res?.tempPassword}`);
+                            if (res?.emailSent) {
+                              showToast(res?.message || 'Temporary password generated and emailed.');
+                            } else if (res?.tempPassword) {
+                              setTempKeyModal({
+                                open: true,
+                                tempPassword: res.tempPassword,
+                                userEmail: userForm.email,
+                                userName: userForm.name || 'User',
+                                copied: false,
+                              });
+                              showToast('Temporary key generated. Manual distribution required.', 'ok');
+                            } else {
+                              showToast(res?.message || 'Password reset completed.');
+                            }
                           } catch (err: any) {
                             showToast(err.message || 'Error resetting password', 'err');
                           }
                         }
-                      }} 
+                      }}
                       style={{ padding: '10px 14px', background: '#fef3c7', color: '#d97706', border: '1px solid #fde68a', borderRadius: '8px', cursor: 'pointer', fontSize: '12px', fontWeight: 700 }}
                     >
                       ✉️ Reset Password
                     </button>
-                    <button 
-                      type="button" 
+                    <button
+                      type="button"
                       onClick={() => {
                         handleUserDelete(userForm.id);
                         setShowUserModal(false);
-                      }} 
+                      }}
                       style={{ padding: '10px 14px', background: '#fee2e2', color: '#ef4444', border: '1px solid #fca5a5', borderRadius: '8px', cursor: 'pointer', fontSize: '12px', fontWeight: 700 }}
                     >
                       🗑️ Delete Account
@@ -2445,11 +3041,11 @@ export default function AdminConsolePage() {
             <form onSubmit={handleRoleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <label style={{ fontSize: '12px', fontWeight: 600, color: isDark ? '#cbd5e1' : '#334155' }}>Role Name <span style={{ color: 'red' }}>*</span></label>
-                <input 
-                  type="text" 
+                <input
+                  type="text"
                   placeholder="Enter role name"
-                  value={roleForm.name} 
-                  onChange={e => setRoleForm({...roleForm, name: e.target.value})} 
+                  value={roleForm.name}
+                  onChange={e => setRoleForm({...roleForm, name: e.target.value})}
                   required
                   style={{ padding: '10px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', borderRadius: '6px', background: isDark ? '#0f172a' : '#fff', color: isDark ? '#fff' : '#0f172a' }}
                 />
@@ -2469,16 +3065,16 @@ export default function AdminConsolePage() {
       {showDashboardModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
           <div style={{ background: isDark ? '#1e293b' : '#fff', border: isDark ? '1px solid #334155' : 'none', padding: '28px', borderRadius: '12px', maxWidth: '520px', width: '100%', maxHeight: '85vh', overflowY: 'auto', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.3)', color: isDark ? '#f1f5f9' : '#0f172a', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            
+
             {/* Modal Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: isDark ? '1px solid #334155' : '1px solid #f1f5f9', paddingBottom: '12px' }}>
               <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: isDark ? '#3b82f6' : 'var(--navy)' }}>
-                {selectedDashboardUser 
-                  ? `Session History: ${selectedDashboardUser.name}` 
+                {selectedDashboardUser
+                  ? `Session History: ${selectedDashboardUser.name}`
                   : `${dashboardModalType === 'all' ? 'All Registered Accounts' : dashboardModalType === 'online' ? 'Active/Online Users' : 'Offline Users'}`
                 }
               </h3>
-              <button 
+              <button
                 onClick={() => setShowDashboardModal(false)}
                 style={{ background: 'transparent', border: 'none', color: isDark ? '#cbd5e1' : '#475569', fontSize: '18px', cursor: 'pointer' }}
               >
@@ -2489,14 +3085,14 @@ export default function AdminConsolePage() {
             {/* Modal Body */}
             {selectedDashboardUser ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                <button 
-                  type="button" 
+                <button
+                  type="button"
                   onClick={() => setSelectedDashboardUser(null)}
                   style={{ alignSelf: 'flex-start', padding: '6px 12px', background: isDark ? '#334155' : '#f1f5f9', color: isDark ? '#cbd5e1' : '#475569', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
                 >
                   ⬅ Back to user list
                 </button>
-                
+
                 <div style={{ background: isDark ? '#0f172a' : '#f8fafc', padding: '12px', borderRadius: '8px', border: isDark ? '1px solid #334155' : '1px solid #e2e8f0', fontSize: '12px' }}>
                   <div style={{ fontWeight: 700 }}>{selectedDashboardUser.name}</div>
                   <div style={{ color: isDark ? '#94a3b8' : '#64748b', marginTop: '2px' }}>{selectedDashboardUser.email}</div>
@@ -2512,14 +3108,14 @@ export default function AdminConsolePage() {
                           <span>🟢 Logged In:</span>
                           <span>{format12Hour(log.loginTime)}</span>
                         </div>
-                        
+
                         <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 600, marginTop: '6px', borderTop: isDark ? '1px solid #334155' : '1px solid #f1f5f9', paddingTop: '6px' }}>
                           <span>🔴 Logged Out:</span>
                           <span style={{ color: log.logoutTime ? 'inherit' : '#10b981' }}>
                             {log.logoutTime ? format12Hour(log.logoutTime) : 'Active Now'}
                           </span>
                         </div>
-                        
+
                         <div style={{ fontSize: '10px', color: '#94a3b8', marginTop: '6px' }}>IP: {log.ipAddress || '—'} | ID: {log.id}</div>
                       </div>
                     ))
@@ -2538,8 +3134,8 @@ export default function AdminConsolePage() {
                     return true;
                   })
                   .map((u: any) => (
-                    <div 
-                      key={u.id} 
+                    <div
+                      key={u.id}
                       onClick={() => setSelectedDashboardUser(u)}
                       style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', borderRadius: '8px', background: isDark ? '#0f172a' : '#f8fafc', border: isDark ? '1px solid #334155' : '1px solid #f1f5f9', cursor: 'pointer', transition: 'all 0.15s' }}
                     >
@@ -2561,11 +3157,11 @@ export default function AdminConsolePage() {
                 }
               </div>
             )}
-            
+
             {/* Modal Footer */}
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '8px', borderTop: isDark ? '1px solid #334155' : '1px solid #f1f5f9', paddingTop: '12px' }}>
-              <button 
-                type="button" 
+              <button
+                type="button"
                 onClick={() => setShowDashboardModal(false)}
                 style={{ padding: '8px 16px', background: branding.primary_color || 'var(--navy)', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '13px', fontWeight: 700 }}
               >
@@ -2585,7 +3181,7 @@ export default function AdminConsolePage() {
               <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: isDark ? '#3b82f6' : 'var(--navy)' }}>
                 Session Telemetry Registry Card
               </h3>
-              <button 
+              <button
                 onClick={() => setSelectedSessionLog(null)}
                 style={{ background: 'transparent', border: 'none', color: isDark ? '#cbd5e1' : '#475569', fontSize: '18px', cursor: 'pointer' }}
               >
@@ -2599,7 +3195,7 @@ export default function AdminConsolePage() {
                 <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{selectedSessionLog.id}</span>
               </div>
               <hr style={{ border: 0, borderTop: isDark ? '1px solid #334155' : '1px solid #f1f5f9', margin: 0 }} />
-              
+
               <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                 <span style={{ fontSize: '10px', textTransform: 'uppercase', color: '#94a3b8', fontWeight: 600 }}>User Profile</span>
                 <span style={{ fontWeight: 700 }}>{selectedSessionLog.userName}</span>
@@ -2627,8 +3223,8 @@ export default function AdminConsolePage() {
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', borderTop: isDark ? '1px solid #334155' : '1px solid #f1f5f9', paddingTop: '12px' }}>
-              <button 
-                type="button" 
+              <button
+                type="button"
                 onClick={() => setSelectedSessionLog(null)}
                 style={{ padding: '8px 16px', background: branding.primary_color || 'var(--navy)', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '13px', fontWeight: 700 }}
               >
@@ -2647,7 +3243,7 @@ export default function AdminConsolePage() {
               <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: isDark ? '#3b82f6' : 'var(--navy)' }}>
                 Activity Audit Trail Card
               </h3>
-              <button 
+              <button
                 onClick={() => setSelectedAuditLog(null)}
                 style={{ background: 'transparent', border: 'none', color: isDark ? '#cbd5e1' : '#475569', fontSize: '18px', cursor: 'pointer' }}
               >
@@ -2667,7 +3263,7 @@ export default function AdminConsolePage() {
                 </div>
               </div>
               <hr style={{ border: 0, borderTop: isDark ? '1px solid #334155' : '1px solid #f1f5f9', margin: 0 }} />
-              
+
               <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                 <span style={{ fontSize: '10px', textTransform: 'uppercase', color: '#94a3b8', fontWeight: 600 }}>User Profile</span>
                 <span style={{ fontWeight: 700 }}>{selectedAuditLog.userName || 'System Auto-job'}</span>
@@ -2697,8 +3293,8 @@ export default function AdminConsolePage() {
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', borderTop: isDark ? '1px solid #334155' : '1px solid #f1f5f9', paddingTop: '12px' }}>
-              <button 
-                type="button" 
+              <button
+                type="button"
                 onClick={() => setSelectedAuditLog(null)}
                 style={{ padding: '8px 16px', background: branding.primary_color || 'var(--navy)', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '13px', fontWeight: 700 }}
               >
@@ -2713,13 +3309,13 @@ export default function AdminConsolePage() {
       {showRolePermissionsModal && selectedRole && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
           <div style={{ background: isDark ? '#1e293b' : '#fff', border: isDark ? '1px solid #334155' : 'none', padding: '28px', borderRadius: '12px', maxWidth: '640px', width: '100%', maxHeight: '85vh', overflowY: 'auto', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.3)', color: isDark ? '#f1f5f9' : '#0f172a', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            
+
             {/* Modal Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: isDark ? '1px solid #334155' : '1px solid #f1f5f9', paddingBottom: '12px' }}>
               <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700, color: isDark ? '#3b82f6' : 'var(--navy)' }}>
                 Configure Permissions Matrix: {selectedRole.name}
               </h3>
-              <button 
+              <button
                 onClick={() => setShowRolePermissionsModal(false)}
                 style={{ background: 'transparent', border: 'none', color: isDark ? '#cbd5e1' : '#475569', fontSize: '18px', cursor: 'pointer' }}
               >
@@ -2742,50 +3338,50 @@ export default function AdminConsolePage() {
                         <div style={{ fontWeight: 600, fontSize: '13px' }}>{tab.label}</div>
                         <div style={{ fontSize: '10px', color: isDark ? '#94a3b8' : '#64748b' }}>Resource scope: {tab.resource}</div>
                       </div>
-                      
+
                       <div style={{ display: 'flex', gap: '4px', background: isDark ? '#1e293b' : '#f1f5f9', padding: '3px', borderRadius: '6px', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1' }}>
-                        <button 
+                        <button
                           type="button"
                           onClick={() => handleAccessLevelChange(tab.resource, 'Full Access')}
-                          style={{ 
-                            padding: '4px 8px', 
-                            borderRadius: '4px', 
-                            border: 'none', 
-                            fontSize: '11px', 
-                            fontWeight: 600, 
-                            cursor: 'pointer', 
+                          style={{
+                            padding: '4px 8px',
+                            borderRadius: '4px',
+                            border: 'none',
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            cursor: 'pointer',
                             background: level === 'Full Access' ? '#22c55e' : 'transparent',
                             color: level === 'Full Access' ? '#fff' : (isDark ? '#9ca3af' : '#64748b'),
                           }}
                         >
                           🔓 Full
                         </button>
-                        <button 
+                        <button
                           type="button"
                           onClick={() => handleAccessLevelChange(tab.resource, 'Read Only')}
-                          style={{ 
-                            padding: '4px 8px', 
-                            borderRadius: '4px', 
-                            border: 'none', 
-                            fontSize: '11px', 
-                            fontWeight: 600, 
-                            cursor: 'pointer', 
+                          style={{
+                            padding: '4px 8px',
+                            borderRadius: '4px',
+                            border: 'none',
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            cursor: 'pointer',
                             background: level === 'Read Only' ? '#3b82f6' : 'transparent',
                             color: level === 'Read Only' ? '#fff' : (isDark ? '#9ca3af' : '#64748b'),
                           }}
                         >
                           👁️ Read
                         </button>
-                        <button 
+                        <button
                           type="button"
                           onClick={() => handleAccessLevelChange(tab.resource, 'Hidden')}
-                          style={{ 
-                            padding: '4px 8px', 
-                            borderRadius: '4px', 
-                            border: 'none', 
-                            fontSize: '11px', 
-                            fontWeight: 600, 
-                            cursor: 'pointer', 
+                          style={{
+                            padding: '4px 8px',
+                            borderRadius: '4px',
+                            border: 'none',
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            cursor: 'pointer',
                             background: level === 'Hidden' ? '#ef4444' : 'transparent',
                             color: level === 'Hidden' ? '#fff' : (isDark ? '#9ca3af' : '#64748b'),
                           }}
@@ -2801,7 +3397,7 @@ export default function AdminConsolePage() {
 
             {/* Modal Footer */}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', borderTop: isDark ? '1px solid #334155' : '1px solid #f1f5f9', paddingTop: '12px', marginTop: '8px' }}>
-              <button 
+              <button
                 type="button"
                 onClick={() => setShowRolePermissionsModal(false)}
                 style={{ padding: '8px 16px', background: isDark ? '#334155' : '#f1f5f9', color: isDark ? '#cbd5e1' : '#475569', border: isDark ? '1px solid #4b5563' : '1px solid #cbd5e1', borderRadius: '6px', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}
@@ -2809,7 +3405,7 @@ export default function AdminConsolePage() {
                 Cancel
               </button>
               {selectedRole.name !== 'Admin' && (
-                <button 
+                <button
                   type="button"
                   onClick={async () => {
                     await handleSaveAccessControls();
@@ -2832,35 +3428,96 @@ export default function AdminConsolePage() {
           <div style={{ background: isDark ? '#1e293b' : '#fff', border: isDark ? '1px solid #334155' : 'none', padding: '32px', borderRadius: '12px', maxWidth: '400px', width: '100%', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.3)', color: isDark ? '#f1f5f9' : '#0f172a', display: 'flex', flexDirection: 'column', gap: '20px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: isDark ? '1px solid #334155' : '1px solid #f1f5f9', paddingBottom: '12px' }}>
               <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: isDark ? '#3b82f6' : 'var(--navy)' }}>Confirm Logout</h3>
-              <button 
+              <button
                 onClick={() => setShowLogoutConfirmModal(false)}
                 style={{ background: 'transparent', border: 'none', color: isDark ? '#cbd5e1' : '#475569', fontSize: '18px', cursor: 'pointer' }}
               >
                 ✕
               </button>
             </div>
-            
+
             <div style={{ fontSize: '14px', lineHeight: '1.6', color: isDark ? '#cbd5e1' : '#475569' }}>
               Are you sure you want to terminate your administrative session and log out of the Hartek Admin Console?
             </div>
-            
+
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '8px' }}>
-              <button 
-                type="button" 
-                onClick={() => setShowLogoutConfirmModal(false)} 
+              <button
+                type="button"
+                onClick={() => setShowLogoutConfirmModal(false)}
                 style={{ padding: '10px 18px', background: isDark ? '#334155' : '#f1f5f9', color: isDark ? '#cbd5e1' : '#475569', border: isDark ? '1px solid #4b5563' : '1px solid #cbd5e1', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}
               >
                 Cancel
               </button>
-              <button 
-                type="button" 
+              <button
+                type="button"
                 onClick={async () => {
                   setShowLogoutConfirmModal(false);
                   await handleLogout();
-                }} 
+                }}
                 style={{ padding: '10px 18px', background: '#ef4444', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 700, fontSize: '13px', boxShadow: '0 4px 12px rgba(239, 68, 68, 0.2)' }}
               >
                 Yes, Logout
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TEMPORARY SECURITY KEY ONE-TIME DISPLAY MODAL */}
+      {tempKeyModal && tempKeyModal.open && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10001 }}>
+          <div style={{ background: isDark ? '#1e293b' : '#fff', border: isDark ? '1px solid #334155' : '1px solid #e2e8f0', padding: '28px', borderRadius: '12px', maxWidth: '480px', width: '100%', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.3)', color: isDark ? '#f1f5f9' : '#0f172a', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: isDark ? '1px solid #334155' : '1px solid #f1f5f9', paddingBottom: '12px' }}>
+              <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: isDark ? '#fbbf24' : '#d97706', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                🔑 One-Time Temporary Password
+              </h3>
+              <button
+                type="button"
+                onClick={closeTempKeyModal}
+                style={{ background: 'transparent', border: 'none', color: isDark ? '#cbd5e1' : '#475569', fontSize: '18px', cursor: 'pointer' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div style={{ padding: '10px 14px', background: isDark ? 'rgba(239, 68, 68, 0.15)' : '#fef2f2', border: '1px solid #fca5a5', borderRadius: '8px', fontSize: '12px', color: isDark ? '#fca5a5' : '#b91c1c' }}>
+              <strong>Email Delivery Status:</strong> Unconfigured / Suppressed. The automatic notification could not be dispatched to <strong>{tempKeyModal.userEmail}</strong>. Please share this temporary key with the user manually.
+            </div>
+
+            <div style={{ fontSize: '13px', color: isDark ? '#94a3b8' : '#64748b' }}>
+              Temporary password for <strong>{tempKeyModal.userName}</strong>:
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: isDark ? '#0f172a' : '#f8fafc', border: isDark ? '1px solid #334155' : '1px solid #cbd5e1', padding: '12px 16px', borderRadius: '8px' }}>
+              <span style={{ fontFamily: 'monospace', fontSize: '18px', fontWeight: 700, letterSpacing: '1px', flex: 1, color: isDark ? '#38bdf8' : '#0284c7', userSelect: 'all' }}>
+                {tempKeyModal.tempPassword}
+              </span>
+              <button
+                type="button"
+                onClick={handleCopyTempPassword}
+                style={{ padding: '6px 14px', background: tempKeyModal.copied ? '#10b981' : (branding.primary_color || 'var(--navy)'), color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}
+              >
+                {tempKeyModal.copied ? '✓ Copied' : '📋 Copy'}
+              </button>
+            </div>
+
+            {tempKeyModal.copyError && (
+              <div style={{ padding: '8px 12px', background: isDark ? 'rgba(239, 68, 68, 0.1)' : '#fef2f2', border: '1px solid #fca5a5', borderRadius: '6px', fontSize: '12px', color: isDark ? '#fca5a5' : '#b91c1c' }}>
+                ⚠️ {tempKeyModal.copyError}
+              </div>
+            )}
+
+            <div style={{ fontSize: '11px', color: isDark ? '#64748b' : '#94a3b8' }}>
+              ⚠️ This key is displayed only once and is not stored in browser storage. The user will be required to change their password upon next login.
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '4px' }}>
+              <button
+                type="button"
+                onClick={closeTempKeyModal}
+                style={{ padding: '8px 18px', background: isDark ? '#334155' : '#f1f5f9', color: isDark ? '#cbd5e1' : '#475569', border: isDark ? '1px solid #4b5563' : '1px solid #cbd5e1', borderRadius: '8px', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}
+              >
+                Done
               </button>
             </div>
           </div>

@@ -1,16 +1,38 @@
 export function getApiBaseUrl(): string {
-  const envUrl = process.env.NEXT_PUBLIC_API_URL;
-  if (envUrl && envUrl.trim() !== '') {
-    return envUrl;
-  }
-
   if (typeof window !== 'undefined') {
+    const envUrl = process.env.NEXT_PUBLIC_API_URL;
+    if (envUrl && envUrl.trim() !== '') {
+      return envUrl.trim();
+    }
     // If running in browser on Next.js dev port 3000, call NestJS on port 4000
     if (window.location.port === '3000') {
       return `${window.location.protocol}//${window.location.hostname}:4000/api`;
     }
     // Otherwise behind Nginx reverse proxy (standard port 80/443), resolve relative to origin
     return '/api';
+  }
+
+  // Server-side (SSR / Node runtime)
+  const isStaging =
+    (process.env.APP_ENV || '').trim().toLowerCase() === 'staging' ||
+    (process.env.DEPLOY_ENV || '').trim().toLowerCase() === 'staging' ||
+    (process.env.STAGING || '').trim().toLowerCase() === 'true';
+
+  const backendUrl = process.env.BACKEND_URL?.trim();
+  if (backendUrl) {
+    const cleanUrl = backendUrl.replace(/\/+$/, '');
+    return cleanUrl.endsWith('/api') ? cleanUrl : `${cleanUrl}/api`;
+  }
+
+  if (isStaging) {
+    throw new Error(
+      'Missing or invalid required BACKEND_URL in staging environment for server-side API requests'
+    );
+  }
+
+  const envUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
+  if (envUrl && /^https?:\/\//i.test(envUrl)) {
+    return envUrl;
   }
 
   return 'http://localhost:4000/api';

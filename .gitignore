@@ -46,3 +46,8 @@ pnpm-debug.log*
 /scratch/
 backups/
 /backups/
+
+# Deployment and release metadata
+.releases/
+.prev-deployed-commit
+.current-deployed-commit

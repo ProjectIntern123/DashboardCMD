@@ -1,13 +1,29 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { SettingsService } from '../settings/settings.service';
+import { RecipientValidator } from '../common/utils/recipient-validator';
 import { CreateEscalationDto, UpdateEscalationDto } from './dto/escalation.dto';
 
 @Injectable()
 export class EscalationService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private settingsService: SettingsService,
+    private recipientValidator: RecipientValidator,
+  ) {}
 
   async create(createEscalationDto: any, userId: string) {
     const { attachments, ...data } = createEscalationDto;
+
+    if (attachments && attachments.length > 0) {
+      await this.settingsService.validateAttachmentSizes(attachments);
+    }
+
+    let validatedAssignedTo = null;
+    if (data.assignedTo) {
+      validatedAssignedTo = await this.recipientValidator.validateMixedRecipients(data.assignedTo);
+    }
+
     const totalCount = await this.prisma.escalation.count();
     const code = data.code || `ESC-2026-${String(totalCount + 1).padStart(2, '0')}`;
 
@@ -25,7 +41,7 @@ export class EscalationService {
         tgt: data.tgt || null,
         st: data.st,
         res: data.res || null,
-        assignedTo: (data.assignedTo as any) || null,
+        assignedTo: (validatedAssignedTo as any) || null,
         attachments: {
           create: attachments?.map((att: any) => ({
             name: att.name,
@@ -99,8 +115,15 @@ export class EscalationService {
   }
 
   async update(id: string, updateEscalationDto: any, userId: string, userName: string) {
-    await this.findOne(id); // Check existence
+    const existingEsc = await this.findOne(id); // Check existence
     const { attachments, ...data } = updateEscalationDto;
+
+    let validatedAssignedTo = existingEsc.assignedTo;
+    if (data.assignedTo !== undefined) {
+      validatedAssignedTo = data.assignedTo === null
+        ? null
+        : (await this.recipientValidator.validateMixedRecipients(data.assignedTo) as any);
+    }
 
     // Clean old attachments
     const existingAttIds = attachments?.map((a: any) => a.id).filter(Boolean) || [];
@@ -112,6 +135,9 @@ export class EscalationService {
     });
 
     const newAttachments = attachments?.filter((a: any) => !a.id) || [];
+    if (newAttachments.length > 0) {
+      await this.settingsService.validateAttachmentSizes(newAttachments);
+    }
 
     return this.prisma.escalation.update({
       where: { id },
@@ -128,7 +154,7 @@ export class EscalationService {
         tgt: data.tgt || null,
         st: data.st,
         res: data.res || null,
-        assignedTo: (data.assignedTo as any) || null,
+        assignedTo: (validatedAssignedTo as any),
         attachments: {
           create: newAttachments.map((att: any) => ({
             name: att.name,

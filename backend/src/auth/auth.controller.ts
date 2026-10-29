@@ -4,6 +4,8 @@ import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { ForgotPasswordDto, ResetPasswordDto } from './dto/auth-actions.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { PortalGuard } from './guards/portal.guard';
+import { SharedPortal } from './decorators/portal.decorator';
 import { GetUser } from './decorators/get-user.decorator';
 
 @Controller('auth')
@@ -109,7 +111,8 @@ export class AuthController {
     return this.authService.resetPassword(resetPasswordDto);
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PortalGuard)
+  @SharedPortal()
   @Post('change-password-temp')
   @HttpCode(HttpStatus.OK)
   async changePasswordTemp(
@@ -122,7 +125,8 @@ export class AuthController {
     return this.authService.changePasswordTemp(user.id, body.newPassword);
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PortalGuard)
+  @SharedPortal()
   @Get('me')
   async me(@GetUser() user: any) {
     return user;
