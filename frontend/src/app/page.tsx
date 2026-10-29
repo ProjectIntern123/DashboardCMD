@@ -265,7 +265,6 @@ export default function DashboardPage() {
   const [noteSearchQuery, setNoteSearchQuery] = useState('');
   const [noteSortOrder, setNoteSortOrder] = useState<'edited-desc' | 'title'>('edited-desc');
 
-
   // Detail Modal states
   const [selectedProject, setSelectedProject] = useState<any | null>(null);
   const [selectedMeeting, setSelectedMeeting] = useState<any | null>(null);
@@ -1360,50 +1359,6 @@ export default function DashboardPage() {
     }
   };
 
-  const handleFormat = (type: 'bold' | 'italic' | 'underline' | 'list') => {
-    const ta = document.getElementById('np-editor-textarea') as HTMLTextAreaElement;
-    if (!ta) return;
-
-    const start = ta.selectionStart;
-    const end = ta.selectionEnd;
-    const text = ta.value;
-    const selected = text.substring(start, end);
-
-    let replacement = '';
-    let offset = 0;
-    if (type === 'bold') {
-      replacement = `**${selected || 'bold text'}**`;
-      offset = selected ? 0 : 2;
-    } else if (type === 'italic') {
-      replacement = `*${selected || 'italic text'}*`;
-      offset = selected ? 0 : 1;
-    } else if (type === 'underline') {
-      replacement = `<u>${selected || 'underlined text'}</u>`;
-      offset = selected ? 0 : 3;
-    } else if (type === 'list') {
-      replacement = selected
-        ? selected.split('\n').map(line => line.startsWith('- ') ? line : `- ${line}`).join('\n')
-        : '- List item';
-    }
-
-    const newText = text.substring(0, start) + replacement + text.substring(end);
-    setNoteTextInput(newText);
-
-    if (activeNoteId) {
-      setNotes(prev => prev.map(n => n.id === activeNoteId ? { ...n, text: newText, ts: new Date().toISOString() } : n));
-      api.put(`/notepad/${activeNoteId}`, { title: noteTitleInput, text: newText });
-    }
-
-    setTimeout(() => {
-      ta.focus();
-      if (selected) {
-        ta.setSelectionRange(start, start + replacement.length);
-      } else {
-        const cursor = start + offset;
-        ta.setSelectionRange(cursor, cursor + (type === 'list' ? 9 : 4));
-      }
-    }, 50);
-  };
 
 
 
@@ -3418,7 +3373,7 @@ export default function DashboardPage() {
                           onClick={() => {
                             setActiveNoteId(n.id);
                             setNoteTitleInput(n.title);
-                            setNoteTextInput(n.text || '');
+                            setNoteTextInput((n.text || '').replace(/<!-- item_id: [a-f0-9-]+ -->/g, ''));
                           }}
                           style={{
                             padding: '12px',
@@ -3490,7 +3445,8 @@ export default function DashboardPage() {
                         className="btn-add"
                         onClick={async () => {
                           try {
-                            await api.put(`/notepad/${activeNoteId}`, { title: noteTitleInput, text: noteTextInput });
+                            const fullText = getFullNoteTextWithComment(activeNoteId, noteTextInput);
+                            await api.put(`/notepad/${activeNoteId}`, { title: noteTitleInput, text: fullText });
                             showToast('Note saved manually', 'ok');
                             const label = document.getElementById('np-autosave-label');
                             if (label) label.textContent = `Saved at ${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}`;
@@ -3509,44 +3465,6 @@ export default function DashboardPage() {
                       >
                         🗑️ Delete
                       </button>
-                    </div>
-
-                    {/* Formatting Toolbar */}
-                    <div className="formatting-toolbar" style={{ display: 'flex', gap: '6px', padding: '8px 12px', background: '#f8f9fa', borderRadius: '8px', border: '1px solid var(--border)', marginBottom: '12px', alignItems: 'center' }}>
-                      <button
-                        type="button"
-                        onMouseDown={(e) => { e.preventDefault(); handleFormat('bold'); }}
-                        title="Bold"
-                        style={{ padding: '4px 8px', fontSize: '12px', fontWeight: 'bold', background: '#fff', border: '1px solid #d1d5db', borderRadius: '4px', cursor: 'pointer' }}
-                      >
-                        B
-                      </button>
-                      <button
-                        type="button"
-                        onMouseDown={(e) => { e.preventDefault(); handleFormat('italic'); }}
-                        title="Italic"
-                        style={{ padding: '4px 8px', fontSize: '12px', fontStyle: 'italic', background: '#fff', border: '1px solid #d1d5db', borderRadius: '4px', cursor: 'pointer' }}
-                      >
-                        I
-                      </button>
-                      <button
-                        type="button"
-                        onMouseDown={(e) => { e.preventDefault(); handleFormat('underline'); }}
-                        title="Underline"
-                        style={{ padding: '4px 8px', fontSize: '12px', textDecoration: 'underline', background: '#fff', border: '1px solid #d1d5db', borderRadius: '4px', cursor: 'pointer' }}
-                      >
-                        U
-                      </button>
-                      <button
-                        type="button"
-                        onMouseDown={(e) => { e.preventDefault(); handleFormat('list'); }}
-                        title="Bullet List"
-                        style={{ padding: '4px 8px', fontSize: '12px', background: '#fff', border: '1px solid #d1d5db', borderRadius: '4px', cursor: 'pointer' }}
-                      >
-                        • List
-                      </button>
-                      <div style={{ height: '16px', width: '1px', background: '#cbd5e1', margin: '0 4px' }} />
-                      <span style={{ fontSize: '11px', color: 'var(--muted)' }}>Helper formatting tools</span>
                     </div>
 
                     <input
@@ -3574,26 +3492,31 @@ export default function DashboardPage() {
                     {/* Textarea Editor */}
                     <textarea
                       id="np-editor-textarea"
-                      placeholder="Begin drafting private notepad transcripts. Selected helper formatting triggers will wrap text selection..."
-                      value={noteTextInput.replace(/<!-- item_id: [a-f0-9-]+ -->/g, '')}
+                      placeholder="Type your private notes here..."
+                      value={noteTextInput}
                       onChange={e => {
                         const userInput = e.target.value;
-                        const commentMatch = noteTextInput.match(/<!-- item_id: [a-f0-9-]+ -->/);
-                        const comment = commentMatch ? `\n${commentMatch[0]}` : '';
-                        const fullText = userInput + comment;
-                        handleNotepadChange(fullText);
+                        setNoteTextInput(userInput);
+                        const fullText = getFullNoteTextWithComment(activeNoteId, userInput);
+                        setNotes(prev => prev.map(n => n.id === activeNoteId ? { ...n, text: fullText, ts: new Date().toISOString() } : n));
+                        triggerAutosave();
                       }}
                       style={{
                         flex: 1,
-                        minHeight: '380px',
-                        padding: '12px',
+                        width: '100%',
+                        minHeight: '420px',
+                        padding: '16px',
                         border: '1px solid var(--border)',
                         borderRadius: '8px',
                         fontSize: '14px',
                         fontFamily: 'var(--font)',
                         lineHeight: '1.6',
                         resize: 'none',
-                        outline: 'none'
+                        outline: 'none',
+                        boxSizing: 'border-box',
+                        color: 'var(--text)',
+                        background: '#fff',
+                        cursor: 'text'
                       }}
                     />
 
