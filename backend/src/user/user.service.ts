@@ -15,13 +15,13 @@ export class UserService {
   ) { }
 
   async findAll(actorRole: string) {
-    const isSystemAdmin = actorRole === 'Admin';
+    const isSystemAdmin = actorRole === 'Admin' || actorRole === 'Super Admin';
 
     const where: any = {};
 
     if (!isSystemAdmin) {
       where.role = {
-        name: { notIn: ['Admin'] },
+        name: { notIn: ['Admin', 'Super Admin'] },
       };
     }
 
@@ -139,8 +139,8 @@ export class UserService {
       const newRole = dto.roleId ? await this.prisma.role.findUnique({ where: { id: dto.roleId } }) : null;
       const newRoleName = newRole?.name;
 
-      const wasAdmin = oldRoleName === 'Admin';
-      const willBeAdmin = newRoleName === 'Admin';
+      const wasAdmin = oldRoleName === 'Admin' || oldRoleName === 'Super Admin';
+      const willBeAdmin = newRoleName === 'Admin' || newRoleName === 'Super Admin';
 
       if (wasAdmin && !willBeAdmin) {
         throw new BadRequestException('You cannot change your own role to a non-administrator role.');
@@ -148,10 +148,10 @@ export class UserService {
     }
 
     // 2. Prevent deactivating or changing role of the last remaining active administrator
-    const wasAdmin = user.role?.name === 'Admin';
+    const wasAdmin = user.role?.name === 'Admin' || user.role?.name === 'Super Admin';
     if (wasAdmin) {
       const newRole = dto.roleId ? await this.prisma.role.findUnique({ where: { id: dto.roleId } }) : null;
-      const willBeAdmin = newRole?.name === 'Admin';
+      const willBeAdmin = newRole?.name === 'Admin' || newRole?.name === 'Super Admin';
 
       const isDeactivating = dto.active === false;
       const isLosingAdminRole = !willBeAdmin;
@@ -163,7 +163,7 @@ export class UserService {
             deletedAt: null,
             active: true,
             role: {
-              name: 'Admin',
+              name: { in: ['Admin', 'Super Admin'] },
             },
           },
         });
@@ -313,7 +313,7 @@ export class UserService {
     }
 
     // 2. Prevent deleting the last administrator
-    const isAdminLevel = user.role?.name === 'Admin';
+    const isAdminLevel = user.role?.name === 'Admin' || user.role?.name === 'Super Admin';
     if (isAdminLevel) {
       const otherAdminsCount = await this.prisma.user.count({
         where: {
@@ -321,7 +321,7 @@ export class UserService {
           deletedAt: null,
           active: true,
           role: {
-            name: 'Admin',
+            name: { in: ['Admin', 'Super Admin'] },
           },
         },
       });
@@ -346,7 +346,7 @@ export class UserService {
   }
 
   async findSessionLogs(actorRole: string) {
-    if (actorRole !== 'Admin') {
+    if (actorRole !== 'Admin' && actorRole !== 'Super Admin') {
       throw new BadRequestException('Only administrators can view session logs');
     }
     return this.prisma.userSessionLog.findMany({
@@ -362,7 +362,7 @@ export class UserService {
   }
 
   async getAdminStats(actorRole: string) {
-    if (actorRole !== 'Admin') {
+    if (actorRole !== 'Admin' && actorRole !== 'Super Admin') {
       throw new BadRequestException('Only administrators can access statistics');
     }
 

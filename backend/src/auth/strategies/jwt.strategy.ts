@@ -56,12 +56,15 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         }))
       : [];
 
+    const rawRole = user.role ? user.role.name : 'No Role';
+    const role = rawRole === 'Super Admin' ? 'Admin' : rawRole;
+
     return {
       id: user.id,
       email: user.email,
       name: user.name,
       initials: user.initials,
-      role: user.role ? user.role.name : 'No Role',
+      role,
       departmentId: user.departmentId,
       requiresPasswordReset: user.requiresPasswordReset,
       permissions,

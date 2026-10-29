@@ -146,11 +146,14 @@ export class AuthService {
       },
     });
 
-    // Create payload
+    // Create payload (normalizing legacy Super Admin to canonical Admin)
+    const rawRole = user.role ? user.role.name : 'No Role';
+    const role = rawRole === 'Super Admin' ? 'Admin' : rawRole;
+
     const payload: JwtPayload = {
       sub: user.id,
       email: user.email,
-      role: user.role ? user.role.name : 'No Role',
+      role,
       name: user.name,
       requiresPasswordReset: user.requiresPasswordReset,
     };
@@ -222,10 +225,13 @@ export class AuthService {
         secret: process.env.JWT_REFRESH_SECRET || 'hartek_cmd_super_secure_refresh_token_secret_key_2026',
       });
 
+      const rawRole = session.user.role ? session.user.role.name : 'No Role';
+      const role = rawRole === 'Super Admin' ? 'Admin' : rawRole;
+
       const payload: JwtPayload = {
         sub: session.user.id,
         email: session.user.email,
-        role: session.user.role ? session.user.role.name : 'No Role',
+        role,
         name: session.user.name,
         requiresPasswordReset: session.user.requiresPasswordReset,
       };

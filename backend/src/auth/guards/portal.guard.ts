@@ -24,7 +24,8 @@ export class PortalGuard implements CanActivate {
       throw new UnauthorizedException('Authentication required');
     }
 
-    const isAdmin = user.role === 'Admin';
+    // Support legacy 'Super Admin' role compatibility alongside canonical 'Admin'
+    const isAdmin = user.role === 'Admin' || user.role === 'Super Admin';
 
     if (requiredScope === PortalScope.ADMIN) {
       if (!isAdmin) {

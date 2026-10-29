@@ -290,4 +290,78 @@ describe('AuthService Secret Logging and Response Sanitization Tests', () => {
       expect(lockLog).not.toContain(mockUser.email);
     });
   });
+
+  describe('Legacy Super Admin Role Normalization', () => {
+    it('normalizes legacy "Super Admin" role to canonical "Admin" in login tokens and user response', async () => {
+      const mockSuperAdmin = {
+        id: 'usr-super-admin-01',
+        email: 'superadmin@hartek.com',
+        name: 'Legacy SuperAdmin',
+        passwordHash: await bcrypt.hash('Secret123!', 10),
+        active: true,
+        deletedAt: null,
+        failedLoginAttempts: 0,
+        lockedUntil: null,
+        mfaEnabled: false,
+        requiresPasswordReset: false,
+        role: {
+          id: 'role-super-admin',
+          name: 'Super Admin',
+          permissions: [],
+        },
+      };
+
+      mockPrismaService.user.findUnique.mockResolvedValue(mockSuperAdmin);
+
+      const loginResult = await authService.validateUser(
+        { email: mockSuperAdmin.email, password: 'Secret123!' },
+        '127.0.0.1',
+        'Mozilla/5.0',
+      );
+
+      // Verify returned user object has normalized role 'Admin'
+      expect(loginResult.user.role).toBe('Admin');
+
+      // Verify JWT payload passed to sign had normalized role 'Admin'
+      expect(mockJwtService.sign).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sub: mockSuperAdmin.id,
+          role: 'Admin',
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('normalizes legacy "Super Admin" role to canonical "Admin" during token refresh', async () => {
+      const mockSession = {
+        id: 'session-123',
+        token: 'valid-refresh-token',
+        expiresAt: new Date(Date.now() + 1000000),
+        user: {
+          id: 'usr-super-admin-02',
+          email: 'superadmin2@hartek.com',
+          name: 'Legacy SuperAdmin 2',
+          requiresPasswordReset: false,
+          role: {
+            id: 'role-super-admin',
+            name: 'Super Admin',
+          },
+        },
+      };
+
+      mockPrismaService.session.findUnique.mockResolvedValue(mockSession);
+      mockJwtService.verify.mockReturnValue({ sub: mockSession.user.id });
+
+      await authService.refresh('valid-refresh-token');
+
+      // Verify refreshed token payload signed with role 'Admin'
+      expect(mockJwtService.sign).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sub: mockSession.user.id,
+          role: 'Admin',
+        }),
+        expect.anything(),
+      );
+    });
+  });
 });

@@ -165,4 +165,62 @@ describe('UserService Logging Safeguards and Secret Redaction Tests', () => {
       expect(JSON.stringify(sanitizedFail)).not.toContain(failResult.tempPassword);
     });
   });
+
+  describe('findAll() Role Isolation & Legacy Super Admin Leakage Prevention', () => {
+    it('excludes both canonical "Admin" and legacy "Super Admin" accounts when queried by an Employee', async () => {
+      mockPrismaService.user.findMany.mockResolvedValue([]);
+
+      await userService.findAll('Employee');
+
+      expect(mockPrismaService.user.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            role: {
+              name: { notIn: ['Admin', 'Super Admin'] },
+            },
+          },
+        }),
+      );
+    });
+
+    it('excludes both "Admin" and "Super Admin" accounts when queried by a Manager', async () => {
+      mockPrismaService.user.findMany.mockResolvedValue([]);
+
+      await userService.findAll('Manager');
+
+      expect(mockPrismaService.user.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            role: {
+              name: { notIn: ['Admin', 'Super Admin'] },
+            },
+          },
+        }),
+      );
+    });
+
+    it('does not filter out administrators when queried by a canonical "Admin"', async () => {
+      mockPrismaService.user.findMany.mockResolvedValue([]);
+
+      await userService.findAll('Admin');
+
+      expect(mockPrismaService.user.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {},
+        }),
+      );
+    });
+
+    it('does not filter out administrators when queried by a legacy "Super Admin"', async () => {
+      mockPrismaService.user.findMany.mockResolvedValue([]);
+
+      await userService.findAll('Super Admin');
+
+      expect(mockPrismaService.user.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {},
+        }),
+      );
+    });
+  });
 });

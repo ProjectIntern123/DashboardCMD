@@ -5,6 +5,52 @@
 # ==============================================================================
 set -euo pipefail
 
+ROLLBACK_SUCCESS=0
+ROLLBACK_CLEANUP_DONE=0
+
+cleanup_rollback_on_failure() {
+    local exit_code=$?
+    if [ "$ROLLBACK_CLEANUP_DONE" -eq 1 ]; then
+        exit "$exit_code"
+    fi
+    ROLLBACK_CLEANUP_DONE=1
+    trap - EXIT SIGHUP SIGINT SIGTERM
+    set +e
+    if [ "$ROLLBACK_SUCCESS" -ne 1 ]; then
+        echo "  [ROLLBACK CLEANUP] Cleaning temporary recovery artifacts..."
+        rm -rf backend/dist.rollback.tmp frontend/.next.rollback.tmp
+        if [ ! -d "backend/dist" ] && [ -d "backend/dist.old" ]; then
+            mv "backend/dist.old" "backend/dist" 2>/dev/null || true
+        else
+            rm -rf backend/dist.old
+        fi
+        if [ ! -d "frontend/.next" ] && [ -d "frontend/.next.old" ]; then
+            mv "frontend/.next.old" "frontend/.next" 2>/dev/null || true
+        else
+            rm -rf frontend/.next.old
+        fi
+    fi
+    exit "$exit_code"
+}
+
+handle_rollback_signal() {
+    local sig="$1"
+    case "$sig" in
+        SIGHUP)  SIGNAL_EXIT_CODE=129 ;;
+        SIGINT)  SIGNAL_EXIT_CODE=130 ;;
+        SIGTERM) SIGNAL_EXIT_CODE=143 ;;
+        *)       SIGNAL_EXIT_CODE=1 ;;
+    esac
+    echo ""
+    echo "  [INTERRUPT] Rollback script received $sig signal. Halting safely..."
+    exit "$SIGNAL_EXIT_CODE"
+}
+
+trap 'handle_rollback_signal SIGHUP' SIGHUP
+trap 'handle_rollback_signal SIGINT' SIGINT
+trap 'handle_rollback_signal SIGTERM' SIGTERM
+trap cleanup_rollback_on_failure EXIT
+
 echo "======================================================================"
 echo "[ROLLBACK STARTED] Initiating Emergency Application Rollback"
 echo "Timestamp: $(date +"%Y%m%d-%H%M%S")"
@@ -23,8 +69,8 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
     exit 1
 fi
 
-# 2. Check for unexpected untracked files (excluding legitimate deployment/release metadata)
-UNEXPECTED_UNTRACKED=$(git status --porcelain | grep -vE '^\?\? (\.releases/|\.prev-deployed-commit|\.current-deployed-commit)' || true)
+# 2. Check for unexpected untracked files (excluding legitimate deployment/release metadata and snapshot directories)
+UNEXPECTED_UNTRACKED=$(git status --porcelain | grep -vE '^\?\? (\.releases/|\.prev-deployed-commit|\.current-deployed-commit|backend/dist(\.|\/)|frontend/\.next(\.|\/)|backend/tsconfig\.candidate\.json)' || true)
 if [ -n "$UNEXPECTED_UNTRACKED" ]; then
     echo "  [CRITICAL ERROR] Dirty working tree detected! Unexpected untracked files exist on server:"
     echo "$UNEXPECTED_UNTRACKED"
@@ -70,6 +116,7 @@ if [ ! -d "frontend/.next.prev/server" ] || [ ! -d "frontend/.next.prev/static" 
 fi
 
 echo "  Preserved release artifacts verified: backend/dist.prev and frontend/.next.prev"
+PREV_BUILD_ID=$(cat "frontend/.next.prev/BUILD_ID" 2>/dev/null || echo "")
 
 # 2. Read and validate previous commit metadata BEFORE touching any active directories
 PREV_COMMIT=""
@@ -191,7 +238,16 @@ for i in {1..5}; do
         BACKEND_OK=true
     fi
     if check_http_endpoint "http://127.0.0.1:3000/"; then
-        FRONTEND_OK=true
+        # Release Identity Verification: ensure active Next.js process is serving the restored build manifest
+        if [ -n "${PREV_BUILD_ID:-}" ]; then
+            if check_http_endpoint "http://127.0.0.1:3000/_next/static/${PREV_BUILD_ID}/_buildManifest.js"; then
+                FRONTEND_OK=true
+            else
+                FRONTEND_OK=false
+            fi
+        else
+            FRONTEND_OK=true
+        fi
     fi
 
     if [ "$BACKEND_OK" = true ] && [ "$FRONTEND_OK" = true ]; then
@@ -201,6 +257,7 @@ for i in {1..5}; do
 done
 
 if [ "$HEALTHY" = true ]; then
+    ROLLBACK_SUCCESS=1
     echo "======================================================================"
     echo "[ROLLBACK COMPLETE & VERIFIED] Application restored to previous working version."
     echo "======================================================================"

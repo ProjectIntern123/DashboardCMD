@@ -23,10 +23,262 @@ if [ ! -f "backend/package.json" ] || [ ! -f "frontend/package.json" ]; then
     exit 1
 fi
 
+# ------------------------------------------------------------------------------
+# CONCURRENCY CONTROL: NON-BLOCKING MUTUAL EXCLUSION LOCK
+# ------------------------------------------------------------------------------
+# Prevent multiple deployment instances from executing simultaneously against the
+# same repository and build directories.
+# Location: $PROJECT_DIR/.releases/deploy.lock (already in .gitignore and protected from git status)
+# Configurable via DEPLOY_LOCK_FILE for customized environments and isolated testing.
+mkdir -p "$PROJECT_DIR/.releases"
+DEPLOY_LOCK_FILE="${DEPLOY_LOCK_FILE:-$PROJECT_DIR/.releases/deploy.lock}"
+LOCK_FD=200
+LOCK_ACQUIRED=0
+
+release_deployment_lock() {
+    if [ "$LOCK_ACQUIRED" -eq 1 ]; then
+        if command -v flock &> /dev/null; then
+            eval "exec ${LOCK_FD}>&-" 2>/dev/null || true
+        else
+            local lock_dir="${DEPLOY_LOCK_FILE}.dir"
+            if [ -d "$lock_dir" ] && [ -f "$lock_dir/pid" ]; then
+                local pid_val
+                pid_val=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
+                if [ "$pid_val" = "$$" ]; then
+                    rm -rf "$lock_dir"
+                fi
+            fi
+        fi
+        LOCK_ACQUIRED=0
+    fi
+}
+
+acquire_deployment_lock() {
+    if command -v flock &> /dev/null; then
+        eval "exec ${LOCK_FD}>\"$DEPLOY_LOCK_FILE\""
+        if ! flock -n "$LOCK_FD"; then
+            echo "  [CRITICAL ERROR] Another deployment instance is currently active!"
+            echo "  Lock file '$DEPLOY_LOCK_FILE' is held by another process."
+            echo "  Refusing concurrent deployment to prevent repository, build cache, and runtime corruption."
+            exit 1
+        fi
+        LOCK_ACQUIRED=1
+    else
+        local lock_dir="${DEPLOY_LOCK_FILE}.dir"
+        if ! mkdir "$lock_dir" 2>/dev/null; then
+            local lock_pid=""
+            if [ -f "$lock_dir/pid" ]; then
+                lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
+            fi
+
+            # If PID file was unwritten or empty, wait briefly (100ms) for holder initialization
+            if [ -z "$lock_pid" ]; then
+                sleep 0.1
+                if [ -f "$lock_dir/pid" ]; then
+                    lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
+                fi
+            fi
+
+            # Check if PID is malformed / non-numeric (fail closed on corrupt lock metadata)
+            if [ -n "$lock_pid" ] && ! [[ "$lock_pid" =~ ^[0-9]+$ ]]; then
+                echo "  [CRITICAL ERROR] Corrupt or malformed lock PID file detected ('$lock_pid') in '$lock_dir/pid'."
+                echo "  Refusing deployment to prevent unsafe stale-lock reclamation. Manual investigation required."
+                exit 1
+            fi
+
+            # Check if holder process is actively running
+            if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
+                echo "  [CRITICAL ERROR] Another deployment instance is currently active!"
+                echo "  Lock directory '$lock_dir' is held by active process (PID: $lock_pid)."
+                echo "  Refusing concurrent deployment to prevent repository, build cache, and runtime corruption."
+                exit 1
+            fi
+
+            # Holder process is dead or PID was permanently empty (stale lock).
+            # Atomic reclamation: Use atomic directory rename (mv) to isolate the stale directory.
+            # Blind rm -rf followed by mkdir is vulnerable to interleaving where another concurrent
+            # reclaimer's fresh lock directory gets deleted.
+            # Atomic rename guarantees that exactly one process acquires reclamation rights;
+            # any competing process attempting mv will fail with ENOENT and must fail closed.
+            local reclaim_dir="${lock_dir}.reclaim.$$.$RANDOM"
+            rm -rf "$reclaim_dir" 2>/dev/null || true
+            if mv "$lock_dir" "$reclaim_dir" 2>/dev/null; then
+                # Won reclamation rights. Establish new lock directory.
+                if mkdir "$lock_dir" 2>/dev/null; then
+                    echo "$$" > "$lock_dir/pid"
+                    rm -rf "$reclaim_dir" 2>/dev/null || true
+                    LOCK_ACQUIRED=1
+                else
+                    rm -rf "$reclaim_dir" 2>/dev/null || true
+                    echo "  [CRITICAL ERROR] Another deployment instance is currently active!"
+                    echo "  Lock directory was re-acquired by another process immediately after reclamation."
+                    echo "  Refusing concurrent deployment to prevent repository, build cache, and runtime corruption."
+                    exit 1
+                fi
+            else
+                # Another process won the atomic rename race or directory was already reclaimed
+                echo "  [CRITICAL ERROR] Another deployment instance is currently active!"
+                echo "  Failed to reclaim stale lock directory; another concurrent process acquired it."
+                echo "  Refusing concurrent deployment to prevent repository, build cache, and runtime corruption."
+                exit 1
+            fi
+        else
+            echo "$$" > "$lock_dir/pid"
+            LOCK_ACQUIRED=1
+        fi
+    fi
+}
+
+acquire_deployment_lock
+
+# ------------------------------------------------------------------------------
+# FAILURE CLEANUP & SIGNAL TRAP REGISTRATION
+# ------------------------------------------------------------------------------
+DEPLOY_SUCCESS=0
+ACTIVATION_STARTED=0
+IN_ROLLBACK=0
+CLEANUP_EXECUTED=0
+RECEIVED_SIGNAL=""
+
+cleanup_on_failure() {
+    local exit_code=$?
+
+    # Guarantee cleanup runs strictly once and disarm all signals to prevent recursion
+    if [ "$CLEANUP_EXECUTED" -eq 1 ]; then
+        release_deployment_lock
+        exit "$exit_code"
+    fi
+    CLEANUP_EXECUTED=1
+    trap - EXIT SIGHUP SIGINT SIGTERM
+    set +e
+
+    if [ "$DEPLOY_SUCCESS" -ne 1 ]; then
+        echo "========================================================================="
+        if [ -n "$RECEIVED_SIGNAL" ]; then
+            echo "[DEPLOYMENT INTERRUPTED BY SIGNAL: $RECEIVED_SIGNAL] (Exit code: $exit_code)"
+        fi
+
+        if [ "$ACTIVATION_STARTED" -eq 1 ]; then
+            echo "[DEPLOYMENT FAILED AFTER ACTIVATION] (Exit code: $exit_code)"
+            if [ "$IN_ROLLBACK" -eq 1 ]; then
+                echo "  [CRITICAL ALERT] Rollback procedure already attempted or aborted. Halting to prevent recursion."
+                release_deployment_lock
+                exit "$exit_code"
+            fi
+            IN_ROLLBACK=1
+            echo "  ==> Initiating Automated Recovery to previous known-good release..."
+            if [ -f "./scripts/rollback-production.sh" ]; then
+                if ./scripts/rollback-production.sh; then
+                    echo "  [AUTO-RECOVERY SUCCESSFUL] Production services safely restored to previous release (${CURRENT_COMMIT:-unknown})."
+                    echo "  Deployment ended with failure status to prevent misleading reports."
+                else
+                    echo "  [CRITICAL ALERT] Automated recovery failed! Immediate manual recovery required."
+                    echo "  Inspect PM2 logs with: pm2 logs"
+                fi
+            else
+                echo "  [CRITICAL ALERT] scripts/rollback-production.sh not found! Immediate manual recovery required."
+            fi
+            rm -rf backend/dist.candidate frontend/.next.candidate backend/tsconfig.candidate.json
+            rm -f .prev-deployed-commit
+            echo "========================================================================="
+            release_deployment_lock
+            exit "$exit_code"
+        else
+            echo "[DEPLOYMENT FAILED BEFORE ACTIVATION] Cleaning temporary candidate build artifacts..."
+            # Remove ONLY temporary candidate artifacts created during this failed run
+            rm -rf backend/dist.candidate frontend/.next.candidate backend/tsconfig.candidate.json
+            rm -rf backend/dist.prev.tmp frontend/.next.prev.tmp
+            rm -rf backend/dist.prev.old frontend/.next.prev.old backend/dist.old frontend/.next.old
+            # If candidate build failed before activation, return branch to pre-merge commit non-destructively
+            if [ -n "${CURRENT_COMMIT:-}" ] && [ -n "${CURRENT_BRANCH:-}" ] && [ "$(git rev-parse HEAD 2>/dev/null)" != "$CURRENT_COMMIT" ]; then
+                echo "  Candidate build not activated. Returning branch $CURRENT_BRANCH non-destructively to: $CURRENT_COMMIT"
+                git checkout -B "$CURRENT_BRANCH" "$CURRENT_COMMIT" 2>/dev/null || {
+                    echo "  [SAFETY NOTICE] Non-destructive checkout prevented overwriting working tree files."
+                    echo "  Local files preserved. Current Git commit: $(git rev-parse HEAD 2>/dev/null)"
+                }
+            fi
+            rm -f .prev-deployed-commit
+            echo "========================================================================="
+            release_deployment_lock
+            exit "$exit_code"
+        fi
+    fi
+    release_deployment_lock
+}
+
+handle_signal() {
+    local sig="$1"
+    RECEIVED_SIGNAL="$sig"
+    case "$sig" in
+        SIGHUP)  SIGNAL_EXIT_CODE=129 ;;
+        SIGINT)  SIGNAL_EXIT_CODE=130 ;;
+        SIGTERM) SIGNAL_EXIT_CODE=143 ;;
+        *)       SIGNAL_EXIT_CODE=1 ;;
+    esac
+    echo ""
+    echo "  [INTERRUPT] Received $sig signal. Terminating deployment safely..."
+    exit "$SIGNAL_EXIT_CODE"
+}
+
+trap 'handle_signal SIGHUP' SIGHUP
+trap 'handle_signal SIGINT' SIGINT
+trap 'handle_signal SIGTERM' SIGTERM
+trap cleanup_on_failure EXIT
+
 echo "  User:       $(whoami)"
 echo "  Directory:  $PROJECT_DIR"
 echo "  Node:       $(node -v)"
 echo "  npm:        $(npm -v)"
+
+# Verify sufficient disk space for candidate compilation and snapshot preservation
+# Defensible minimum floor: 1,572,864 KB (1,536 MB = 1.5 GB) accounting for backend dist (~3MB), Next.js candidate (~240MB),
+# Webpack build cache (~400MB peak), active .prev snapshot (~240MB), and swap staging buffers (~240MB).
+# Default safe threshold: 2,097,152 KB (2,048 MB = 2.0 GB) providing operational safety headroom for PM2 logs.
+DEFAULT_DEPLOY_DISK_KB=2097152
+MIN_DEPLOY_DISK_KB=1572864
+
+if [ -n "${REQUIRED_DEPLOY_DISK_KB+x}" ] && [ -n "${REQUIRED_DEPLOY_DISK_KB:-}" ]; then
+    # Validate that override is strictly a positive non-zero integer
+    if ! [[ "$REQUIRED_DEPLOY_DISK_KB" =~ ^[0-9]+$ ]] || [ "$REQUIRED_DEPLOY_DISK_KB" -le 0 ]; then
+        echo "  [CRITICAL ERROR] Invalid REQUIRED_DEPLOY_DISK_KB value: '${REQUIRED_DEPLOY_DISK_KB}'. Must be a positive integer in KB."
+        exit 1
+    fi
+    # Enforce minimum defensible safety floor; reject unsafe lower overrides
+    if [ "$REQUIRED_DEPLOY_DISK_KB" -lt "$MIN_DEPLOY_DISK_KB" ]; then
+        echo "  [CRITICAL ERROR] Requested REQUIRED_DEPLOY_DISK_KB (${REQUIRED_DEPLOY_DISK_KB} KB / $(( REQUIRED_DEPLOY_DISK_KB / 1024 )) MB) is below the minimum safe threshold (${MIN_DEPLOY_DISK_KB} KB / $(( MIN_DEPLOY_DISK_KB / 1024 )) MB)."
+        echo "  Reason: Candidate compilation, Next.js cache, and .prev snapshot staging require at least 1.5 GB concurrent disk space."
+        echo "  Refusing to lower threshold below safety floor."
+        exit 1
+    fi
+    EFFECTIVE_REQUIRED_DISK_KB="$REQUIRED_DEPLOY_DISK_KB"
+else
+    EFFECTIVE_REQUIRED_DISK_KB="$DEFAULT_DEPLOY_DISK_KB"
+fi
+
+if ! command -v df &> /dev/null; then
+    echo "  [CRITICAL ERROR] 'df' utility not available. Cannot verify disk space. Failing closed to protect server state."
+    exit 1
+fi
+
+FREE_KB=$(df -Pk "$PROJECT_DIR" 2>/dev/null | awk 'NR==2 {print $4}' || echo "")
+if [ -z "$FREE_KB" ] || ! [[ "$FREE_KB" =~ ^[0-9]+$ ]]; then
+    echo "  [CRITICAL ERROR] Failed to determine available disk space for '$PROJECT_DIR'. Failing closed to protect server state."
+    exit 1
+fi
+
+AVAILABLE_MB=$(( FREE_KB / 1024 ))
+REQUIRED_MB=$(( EFFECTIVE_REQUIRED_DISK_KB / 1024 ))
+
+if [ "$FREE_KB" -lt "$EFFECTIVE_REQUIRED_DISK_KB" ]; then
+    echo "  [CRITICAL ERROR] Insufficient disk space on $PROJECT_DIR to build and activate candidate release:"
+    echo "    Available: ${AVAILABLE_MB} MB (${FREE_KB} KB)"
+    echo "    Required:  ${REQUIRED_MB} MB (${EFFECTIVE_REQUIRED_DISK_KB} KB)"
+    echo "  Deployment halted before building candidate release or modifying Git state."
+    exit 1
+fi
+
+echo "  Disk Space: ${AVAILABLE_MB} MB available (${REQUIRED_MB} MB required)"
+echo "  [NOTE] Disk preflight verified static threshold. Concurrent external server processes or logging may alter disk space during compilation."
 
 # ------------------------------------------------------------------------------
 # STEP 2: VERIFY GIT WORKING TREE & RELEASE TARGET
@@ -105,59 +357,8 @@ fi
 echo "==> Step 3: Application-only release (No database migrations). Zero database commands will be executed."
 
 # ------------------------------------------------------------------------------
-# FAILURE CLEANUP & ROLLBACK TRAP
+# PRE-ACTIVATION COMMIT TRACKING
 # ------------------------------------------------------------------------------
-DEPLOY_SUCCESS=0
-ACTIVATION_STARTED=0
-IN_ROLLBACK=0
-
-cleanup_on_failure() {
-    local exit_code=$?
-    if [ "$DEPLOY_SUCCESS" -ne 1 ]; then
-        set +e
-        echo "========================================================================="
-        if [ "$ACTIVATION_STARTED" -eq 1 ]; then
-            echo "[DEPLOYMENT FAILED AFTER ACTIVATION] (Exit code: $exit_code)"
-            if [ "$IN_ROLLBACK" -eq 1 ]; then
-                echo "  [CRITICAL ALERT] Rollback procedure already attempted or aborted. Halting to prevent recursion."
-                exit "$exit_code"
-            fi
-            IN_ROLLBACK=1
-            echo "  ==> Initiating Automated Recovery to previous known-good release..."
-            if [ -f "./scripts/rollback-production.sh" ]; then
-                if ./scripts/rollback-production.sh; then
-                    echo "  [AUTO-RECOVERY SUCCESSFUL] Production services safely restored to previous release ($CURRENT_COMMIT)."
-                    echo "  Deployment ended with failure status to prevent misleading reports."
-                else
-                    echo "  [CRITICAL ALERT] Automated recovery failed! Immediate manual recovery required."
-                    echo "  Inspect PM2 logs with: pm2 logs"
-                fi
-            else
-                echo "  [CRITICAL ALERT] scripts/rollback-production.sh not found! Immediate manual recovery required."
-            fi
-            echo "========================================================================="
-            exit "$exit_code"
-        else
-            echo "[DEPLOYMENT FAILED BEFORE ACTIVATION] Cleaning temporary candidate build artifacts..."
-            # Remove ONLY temporary candidate artifacts created during this failed run
-            rm -rf backend/dist.candidate frontend/.next.candidate backend/tsconfig.candidate.json
-            rm -rf backend/dist.prev.tmp frontend/.next.prev.tmp
-            rm -rf backend/dist.prev.old frontend/.next.prev.old backend/dist.old frontend/.next.old
-            # If candidate build failed before activation, return branch to pre-merge commit non-destructively
-            if [ -n "${CURRENT_COMMIT:-}" ] && [ "$(git rev-parse HEAD)" != "$CURRENT_COMMIT" ]; then
-                echo "  Candidate build not activated. Returning branch $CURRENT_BRANCH non-destructively to: $CURRENT_COMMIT"
-                git checkout -B "$CURRENT_BRANCH" "$CURRENT_COMMIT" 2>/dev/null || {
-                    echo "  [SAFETY NOTICE] Non-destructive checkout prevented overwriting working tree files."
-                    echo "  Local files preserved. Current Git commit: $(git rev-parse HEAD)"
-                }
-            fi
-            rm -f .prev-deployed-commit
-            echo "========================================================================="
-            exit "$exit_code"
-        fi
-    fi
-}
-trap cleanup_on_failure EXIT
 
 # Record previous commit for rollback tracking before merge
 echo "$CURRENT_COMMIT" > .prev-deployed-commit
@@ -207,13 +408,14 @@ if [ ! -f "frontend/.next.candidate/BUILD_ID" ]; then
     rm -rf frontend/.next.candidate
     exit 1
 fi
+CANDIDATE_BUILD_ID=$(cat "frontend/.next.candidate/BUILD_ID" 2>/dev/null || echo "")
 
 if [ ! -d "frontend/.next.candidate/server" ] || [ ! -d "frontend/.next.candidate/static" ]; then
     echo "  [CRITICAL ERROR] Frontend candidate compilation is missing server or static assets!"
     rm -rf frontend/.next.candidate
     exit 1
 fi
-echo "  [SUCCESS] Frontend candidate release compiled and verified in .next.candidate."
+echo "  [SUCCESS] Frontend candidate release compiled and verified in .next.candidate (BUILD_ID: ${CANDIDATE_BUILD_ID:-unknown})."
 
 # ------------------------------------------------------------------------------
 # STEP 6: ATOMIC SNAPSHOT & ACTIVATION
@@ -251,6 +453,11 @@ cat << EOF > .releases/previous-release.json
 EOF
 
 # 3. Atomically activate candidate artifacts into production paths
+# Verify both candidate build directories exist immediately prior to activation
+if [ ! -d "backend/dist.candidate" ] || [ ! -d "frontend/.next.candidate" ]; then
+    echo "  [CRITICAL ERROR] Candidate build directories (backend/dist.candidate or frontend/.next.candidate) are missing immediately prior to activation!"
+    exit 1
+fi
 ACTIVATION_STARTED=1
 
 if [ -d "backend/dist" ]; then
@@ -343,7 +550,16 @@ for i in {1..5}; do
         BACKEND_OK=true
     fi
     if check_http_endpoint "http://127.0.0.1:3000/"; then
-        FRONTEND_OK=true
+        # Release Identity Verification: ensure active Next.js process is serving the candidate build manifest
+        if [ -n "${CANDIDATE_BUILD_ID:-}" ]; then
+            if check_http_endpoint "http://127.0.0.1:3000/_next/static/${CANDIDATE_BUILD_ID}/_buildManifest.js"; then
+                FRONTEND_OK=true
+            else
+                FRONTEND_OK=false
+            fi
+        else
+            FRONTEND_OK=true
+        fi
     fi
 
     if [ "$BACKEND_OK" = true ] && [ "$FRONTEND_OK" = true ]; then

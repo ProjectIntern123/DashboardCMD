@@ -41,8 +41,8 @@ export class RecipientValidator {
       throw new BadRequestException('One or more assignee user IDs were not found in the system');
     }
 
-    // Check for Admin accounts
-    const adminUser = users.find(u => u.role?.name === 'Admin');
+    // Check for Admin accounts (including legacy Super Admin)
+    const adminUser = users.find(u => u.role?.name === 'Admin' || u.role?.name === 'Super Admin');
     if (adminUser) {
       throw new BadRequestException('Tasks cannot be assigned to Administrator accounts');
     }
@@ -93,7 +93,7 @@ export class RecipientValidator {
         include: { role: true },
       });
 
-      const adminUser = users.find(u => u.role?.name === 'Admin');
+      const adminUser = users.find(u => u.role?.name === 'Admin' || u.role?.name === 'Super Admin');
       if (adminUser) {
         throw new BadRequestException('Records cannot be assigned to Administrator accounts');
       }
@@ -102,7 +102,7 @@ export class RecipientValidator {
     // Validate emails against Admin accounts (case-insensitive)
     if (candidateEmails.length > 0) {
       const adminUsers = await this.prisma.user.findMany({
-        where: { role: { name: 'Admin' } },
+        where: { role: { name: { in: ['Admin', 'Super Admin'] } } },
         select: { email: true },
       });
       const adminEmailSet = new Set(adminUsers.map(u => u.email.toLowerCase().trim()));
