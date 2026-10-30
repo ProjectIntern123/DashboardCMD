@@ -9,8 +9,19 @@ node_modules/
 .env.development.local
 .env.test.local
 .env.production.local
+.env.staging
+.env.staging.local
+*.env.staging
 /backend/.env
+/backend/.env.staging
 /frontend/.env
+/frontend/.env.staging
+
+# Explicitly preserve example/template files
+!.env.example
+!.env.staging.example
+!/backend/.env.example
+!/backend/.env.staging.example
 
 # Build outputs
 /backend/dist/
@@ -53,3 +64,4 @@ backups/
 .releases/
 .prev-deployed-commit
 .current-deployed-commit
+.prev-staging-commit

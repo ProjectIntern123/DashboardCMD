@@ -320,6 +320,352 @@ fi
 
 ---
 
+### Procedure C: Approved Staging Database Restoration & Verification Runbook
+
+> [!CRITICAL]
+> **Production Protection & Strict Target Isolation:**
+> Database restoration must **NEVER** be targeted at the production database (`cmd_office`).
+> This procedure is reserved strictly for restoring a baseline dump into the **approved staging database** (`cmd_office_staging`).
+> The destination database identity must be positively asserted prior to executing any destructive command (`DROP DATABASE`, `CREATE DATABASE`, or SQL restore stream).
+
+#### Staging Database Restoration Pipeline:
+The following automated restoration runbook enforces POSIX pipeline failure handling, physical archive verification, strict target assertion, and comprehensive schema verification.
+
+> [!NOTE]
+> **Operational Directive:** This documentation provides the canonical runbook. **Do not execute any restore command** without explicit operational authorization and maintenance scheduling.
+
+```bash
+#!/usr/bin/env bash
+# ------------------------------------------------------------------------------
+# Canonical Staging Database Restoration Script
+# Target: Approved Staging Database ONLY (cmd_office_staging)
+# ------------------------------------------------------------------------------
+set -euo pipefail
+
+# 1. Define and verify destination staging database target
+STAGING_DB_TARGET="${STAGING_DB_NAME:-cmd_office_staging}"
+PROD_DB_NAME="cmd_office"
+
+echo "==> Step 1: Validating Destination Target Safety..."
+# Strict fail-closed guard: ensure destination is NOT production
+if [ "$STAGING_DB_TARGET" = "$PROD_DB_NAME" ]; then
+    echo "[CRITICAL ERROR] Target database cannot be production database ('$PROD_DB_NAME')!" >&2
+    echo "Restoration aborted immediately to protect production data." >&2
+    exit 1
+fi
+
+# Positive assertion: destination database name must include staging qualifier
+if [[ ! "$STAGING_DB_TARGET" =~ (staging|stage|test) ]]; then
+    echo "[CRITICAL ERROR] Destination database '$STAGING_DB_TARGET' does not match approved staging naming pattern!" >&2
+    echo "Staging database must explicitly contain 'staging', 'stage', or 'test'." >&2
+    exit 1
+fi
+
+echo "  [VERIFIED] Approved staging destination target: $STAGING_DB_TARGET"
+
+# 2. Locate backup archive and verify existence and non-empty status
+BACKUP_ARCHIVE="${1:-}"
+if [ -z "$BACKUP_ARCHIVE" ]; then
+    # Default to latest verified backup archive if not passed as argument
+    BACKUP_DIR="/var/backups/cmd-dashboard"
+    LATEST_DIR=$(ls -td "$BACKUP_DIR"/backup-* 2>/dev/null | head -n 1)
+    if [ -z "$LATEST_DIR" ]; then
+        echo "[CRITICAL ERROR] No backup directory located under '$BACKUP_DIR'!" >&2
+        exit 1
+    fi
+    BACKUP_ARCHIVE="$LATEST_DIR/$(basename "$LATEST_DIR" | sed 's/backup-/db-backup-/').sql.gz"
+fi
+
+echo "==> Step 2: Verifying Backup File Existence & Non-Empty Check..."
+if [ ! -f "$BACKUP_ARCHIVE" ]; then
+    echo "[CRITICAL ERROR] Backup file '$BACKUP_ARCHIVE' does not exist!" >&2
+    exit 1
+fi
+
+# Verify backup file is non-empty (greater than zero bytes)
+if [ ! -s "$BACKUP_ARCHIVE" ]; then
+    echo "[CRITICAL ERROR] Backup file '$BACKUP_ARCHIVE' is empty (0 bytes)!" >&2
+    exit 1
+fi
+
+FILE_SIZE_BYTES=$(wc -c < "$BACKUP_ARCHIVE" | tr -d ' ')
+echo "  [VERIFIED] Backup file exists: $BACKUP_ARCHIVE ($FILE_SIZE_BYTES bytes)"
+
+# 3. Verify gzip archive integrity
+echo "==> Step 3: Verifying Archive Gzip Integrity..."
+if ! gzip -t "$BACKUP_ARCHIVE"; then
+    echo "[CRITICAL ERROR] Archive gzip CRC-32 integrity check failed for '$BACKUP_ARCHIVE'!" >&2
+    echo "The archive is corrupted or truncated. Aborting restoration." >&2
+    exit 1
+fi
+echo "  [VERIFIED] Archive gzip decompression integrity valid."
+
+# ------------------------------------------------------------------------------
+# ARCHIVE VERIFICATION BOUNDARY NOTICE:
+# A successful 'gzip -t' check verifies ONLY that the compressed archive blocks
+# are physically uncorrupted and that the CRC-32 checksum matches.
+# A passing gzip check does NOT establish that:
+#   1. The SQL dump is syntactically valid or completed cleanly.
+#   2. The SQL statements match the target Prisma schema migrations.
+#   3. Target tables and foreign key constraints can be restored without errors.
+# Database restoration success is established ONLY when 'psql -v ON_ERROR_STOP=1'
+# terminates with exit code 0 and post-restore data assertions confirm record counts.
+# ------------------------------------------------------------------------------
+
+# 4. Verify PostgreSQL dump completion marker
+echo "==> Step 4: Inspecting PostgreSQL Dump Completion Marker..."
+if ! gzip -dc "$BACKUP_ARCHIVE" | tail -n 25 | grep -q "PostgreSQL database dump complete"; then
+    echo "[CRITICAL ERROR] Archive is missing PostgreSQL dump completion marker!" >&2
+    echo "The backup file may have been terminated prematurely during pg_dump." >&2
+    exit 1
+fi
+echo "  [VERIFIED] PostgreSQL dump completion marker present."
+
+# 5. Initialize clean staging destination database
+echo "==> Step 5: Initializing Clean Staging Database: $STAGING_DB_TARGET..."
+# Terminate existing connections to staging database
+psql -U postgres -v ON_ERROR_STOP=1 -c "
+SELECT pg_terminate_backend(pid)
+FROM pg_stat_activity
+WHERE datname = '$STAGING_DB_TARGET' AND pid <> pg_backend_pid();
+" || true
+
+# Drop existing staging database if present
+psql -U postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"$STAGING_DB_TARGET\";"
+# Create clean staging database
+psql -U postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$STAGING_DB_TARGET\" WITH OWNER postgres ENCODING 'UTF8';"
+
+# 6. Execute stream restoration with ON_ERROR_STOP=1 and capture exit code
+echo "==> Step 6: Executing Restoration Pipeline (gzip -dc | psql)..."
+set +e
+gzip -dc "$BACKUP_ARCHIVE" | psql -U postgres -d "$STAGING_DB_TARGET" -v ON_ERROR_STOP=1
+RESTORE_STATUS=$?
+set -e
+
+if [ "$RESTORE_STATUS" -ne 0 ]; then
+    echo "[CRITICAL ERROR] Database restoration pipeline failed with exit code: $RESTORE_STATUS!" >&2
+    echo "Destructive changes or partial restoration state detected. Do not proceed with deployment." >&2
+    exit "$RESTORE_STATUS"
+fi
+echo "  [SUCCESS] SQL restoration completed with exit status: 0."
+
+# 7. Grant staging application database user permissions
+echo "==> Step 7: Configuring Staging Database Privileges..."
+STAGING_DB_USER="${STAGING_DB_USER:-cmd_staging_user}"
+psql -U postgres -d "$STAGING_DB_TARGET" -v ON_ERROR_STOP=1 -c "
+GRANT ALL ON SCHEMA public TO \"${STAGING_DB_USER}\";
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO \"${STAGING_DB_USER}\";
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO \"${STAGING_DB_USER}\";
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO \"${STAGING_DB_USER}\";
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO \"${STAGING_DB_USER}\";
+"
+echo "  [VERIFIED] Privileges granted to staging user '${STAGING_DB_USER}'."
+
+# 8. Post-Restore Schema & Business-Record Verification
+echo "==> Step 8: Executing Post-Restore Schema & Record Verification..."
+psql -U postgres -d "$STAGING_DB_TARGET" -v ON_ERROR_STOP=1 -c "
+SELECT 'User' AS model, COUNT(*) AS total_records FROM \"User\"
+UNION ALL
+SELECT 'Role' AS model, COUNT(*) AS total_records FROM \"Role\"
+UNION ALL
+SELECT 'Task' AS model, COUNT(*) AS total_records FROM \"Task\"
+UNION ALL
+SELECT 'Department' AS model, COUNT(*) AS total_records FROM \"Department\"
+UNION ALL
+SELECT '_prisma_migrations' AS model, COUNT(*) AS total_records FROM \"_prisma_migrations\";
+"
+
+# Validate that core models have non-zero record counts
+RECORD_COUNT_USER=$(psql -U postgres -d "$STAGING_DB_TARGET" -t -A -c "SELECT COUNT(*) FROM \"User\";")
+RECORD_COUNT_ROLE=$(psql -U postgres -d "$STAGING_DB_TARGET" -t -A -c "SELECT COUNT(*) FROM \"Role\";")
+RECORD_COUNT_MIGRATIONS=$(psql -U postgres -d "$STAGING_DB_TARGET" -t -A -c "SELECT COUNT(*) FROM \"_prisma_migrations\";")
+
+if [ "$RECORD_COUNT_USER" -eq 0 ] || [ "$RECORD_COUNT_ROLE" -eq 0 ] || [ "$RECORD_COUNT_MIGRATIONS" -eq 0 ]; then
+    echo "[CRITICAL ERROR] Post-restore record verification failed: Essential tables are empty!" >&2
+    echo "User count: $RECORD_COUNT_USER, Role count: $RECORD_COUNT_ROLE, Migrations count: $RECORD_COUNT_MIGRATIONS" >&2
+    exit 1
+fi
+
+echo "======================================================================"
+echo "[SUCCESS] Staging Database Restoration Fully Verified & Safe!"
+echo "Target: $STAGING_DB_TARGET (Users: $RECORD_COUNT_USER, Roles: $RECORD_COUNT_ROLE, Migrations: $RECORD_COUNT_MIGRATIONS)"
+echo "Next Step: Execute Staging Data Sanitization Protocol before opening staging access."
+echo "======================================================================"
+```
+
+---
+
+### Staging Data Privacy & Multi-Layer Sanitization Standard
+
+> [!CRITICAL]
+> **Data Privacy Reality & False Claims Rejection:**
+> Simply clearing MFA secret (`mfaSecret`) and one-time password (`otpCode`) columns **does NOT** sanitize a production database copy.
+> Real production databases contain:
+> - Production salted bcrypt password hashes (vulnerable to offline GPU dictionary attacks if lower environments are breached).
+> - Active session tokens (`Session`, `UserSessionLog`) that allow session hijacking.
+> - Personally Identifiable Information (PII) of employees and clients (names, emails, phone numbers, IP addresses, device IDs).
+> - Highly sensitive corporate executive data: private executive notepad entries (`NotepadNote`), CMD meeting notepad notes (`Meeting.notepad`), meeting minutes and agendas (`Meeting.notes`), litigation strategies, external counsel and claims (`LegalCase`), multi-crore project financials (`Project.order`, `Project.billed`, `Project.collected`), escalation logs, and proprietary document attachments (`Attachment`).
+> - Outbound SMTP credentials and email templates that could inadvertently transmit emails to real employees or external clients during automated or manual staging tests.
+>
+> Prior to making any restored database accessible to staging users or test runners, the multi-layer sanitization process below must be executed.
+> **DO NOT EXECUTE SANITIZATION SQL AGAINST THE LIVE PRODUCTION DATABASE.**
+
+#### Multi-Layer Sanitization Process Specification:
+
+```sql
+-- =============================================================================
+-- CANONICAL STAGING DATA SANITIZATION SCRIPT (AUDITABLE SQL)
+-- Database Target: cmd_office_staging ONLY
+-- NEVER execute against cmd_office (production)
+-- =============================================================================
+
+BEGIN;
+
+-- 1. POSITIVE SAFETY CHECK: Ensure we are NOT running against production
+DO $$
+BEGIN
+    IF current_database() = 'cmd_office' THEN
+        RAISE EXCEPTION 'CRITICAL DATA SAFETY VIOLATION: Attempted to run sanitization script on production database (cmd_office)!';
+    END IF;
+    IF current_database() NOT LIKE '%staging%' AND current_database() NOT LIKE '%stage%' AND current_database() NOT LIKE '%test%' THEN
+        RAISE EXCEPTION 'CRITICAL DATA SAFETY VIOLATION: Current database (%) is not an approved staging database!', current_database();
+    END IF;
+END $$;
+
+-- -----------------------------------------------------------------------------
+-- LAYER 1: CREDENTIALS & AUTHENTICATION SECRETS
+-- -----------------------------------------------------------------------------
+-- Replace all user password hashes with a known, secure staging test hash
+-- Example below: bcrypt hash of 'StagingPass2026!' with 10 salt rounds:
+UPDATE "User"
+SET
+    "passwordHash" = '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi',
+    "mfaSecret" = NULL,
+    "mfaEnabled" = false,
+    "otpCode" = NULL,
+    "otpExpiresAt" = NULL,
+    "failedLoginAttempts" = 0,
+    "lockedUntil" = NULL,
+    "requiresPasswordReset" = false;
+
+-- Invalidate all stored API key hashes
+UPDATE "ApiKey"
+SET "keyHash" = 'staging_revoked_' || "id",
+    "active" = false;
+
+-- -----------------------------------------------------------------------------
+-- LAYER 2: ACTIVE SESSIONS, LOGS & DEVICE TRACKING
+-- -----------------------------------------------------------------------------
+-- Purge active session tokens and tracking logs to prevent session hijacking
+TRUNCATE TABLE "Session" CASCADE;
+TRUNCATE TABLE "DeviceTrack" CASCADE;
+TRUNCATE TABLE "LoginHistory" CASCADE;
+TRUNCATE TABLE "UserSessionLog" CASCADE;
+
+-- -----------------------------------------------------------------------------
+-- LAYER 3: CONTACT DETAILS & EMPLOYEE PII
+-- -----------------------------------------------------------------------------
+-- Preserve designated testing accounts (e.g. admin, cmd) while anonymizing all others
+UPDATE "User"
+SET "email" = 'user_' || REPLACE("id"::text, '-', '') || '@staging.hartek.local',
+    "name" = 'Staging User ' || SUBSTRING("id"::text, 1, 4)
+WHERE "email" NOT IN ('admin@hartek.com', 'cmd@hartek.com');
+
+-- Update test accounts to use staging domains
+UPDATE "User"
+SET "email" = 'admin@staging.hartek.local'
+WHERE "email" = 'admin@hartek.com';
+
+UPDATE "User"
+SET "email" = 'cmd@staging.hartek.local'
+WHERE "email" = 'cmd@hartek.com';
+
+-- Anonymize Employee directory records
+UPDATE "Employee"
+SET "email" = 'emp_' || LOWER("code") || '@staging.hartek.local',
+    "firstName" = 'TestEmployee',
+    "lastName" = "code";
+
+-- -----------------------------------------------------------------------------
+-- LAYER 4: CONFIDENTIAL BUSINESS RECORDS, EXECUTIVE NOTEPAD & LITIGATION
+-- -----------------------------------------------------------------------------
+-- Scrub personal executive notepad notes and embedded images
+UPDATE "NotepadNote"
+SET "title" = 'Sanitized Note ' || SUBSTRING("id"::text, 1, 8),
+    "text" = 'Content scrubbed for staging environment data protection.',
+    "images" = '[]'::json;
+
+-- Scrub private meeting notepad notes, minutes, agendas, and extracted action items
+UPDATE "Meeting"
+SET "notepad" = 'Meeting notepad scrubbed for staging privacy.',
+    "notes" = 'Executive meeting notes sanitized.',
+    "agenda" = 'Staging synthetic agenda.',
+    "momActions" = '["Synthesized action point 1", "Synthesized action point 2"]'::json;
+
+-- Anonymize litigation strategies, background, claims, and counsel
+UPDATE "LegalCase"
+SET "counsel" = 'Staging Appointed Counsel',
+    "claim" = '₹ 10,00,000 (Staging Synthetic Claim)',
+    "bg" = 'Litigation background narrative sanitized for privacy.',
+    "actionRequired" = 'Staging review required.',
+    "timeline" = '[{"date": "2026-01-01", "note": "Staging synthetic timeline event"}]'::json;
+
+-- Obfuscate multi-crore project order values and risk narratives
+UPDATE "Project"
+SET "client" = 'Confidential Staging Client',
+    "risks" = 'Project risk narrative sanitized.',
+    "rem" = 'Project remarks sanitized.',
+    "order" = 50.0000,
+    "billed" = 25.0000,
+    "collected" = 20.0000;
+
+-- Replace proprietary attachment binaries with harmless placeholder text URI
+-- Preserves Attachment records and foreign keys to avoid breaking relational integrity
+UPDATE "Attachment"
+SET "name" = 'sanitized_attachment.txt',
+    "type" = 'text/plain',
+    "size" = 42,
+    "path" = NULL,
+    "data" = 'data:text/plain;base64,U3RhZ2luZyBhdHRhY2htZW50IHBsYWNlaG9sZGVyIGRhdGEuCg==';
+
+-- Sanitize AuditLog details, IP addresses, and JSON deltas
+UPDATE "AuditLog"
+SET "detail" = 'Audit log details scrubbed for staging privacy.',
+    "ipAddress" = '127.0.0.1',
+    "browser" = 'Staging Synthetic Client',
+    "oldValues" = NULL,
+    "newValues" = NULL;
+
+-- -----------------------------------------------------------------------------
+-- LAYER 5: OUTBOUND INTEGRATIONS & SYSTEM SETTINGS
+-- -----------------------------------------------------------------------------
+-- Disarm outbound SMTP settings to prevent staging from emailing real staff/clients
+UPDATE "SystemSetting"
+SET "value" = '127.0.0.1'
+WHERE "key" IN ('SMTP_HOST', 'smtp_host');
+
+UPDATE "SystemSetting"
+SET "value" = '1025'
+WHERE "key" IN ('SMTP_PORT', 'smtp_port');
+
+UPDATE "SystemSetting"
+SET "value" = 'noreply@staging.hartek.local'
+WHERE "key" IN ('SMTP_SENDER_EMAIL', 'smtp_sender_email', 'SMTP_USERNAME', 'smtp_username');
+
+UPDATE "SystemSetting"
+SET "value" = 'staging_mock_password'
+WHERE "key" IN ('SMTP_PASSWORD', 'smtp_password');
+
+COMMIT;
+```
+
+#### Verification of Referential Integrity Post-Sanitization:
+1. Verify that all primary keys (`User.id`, `Role.id`, `Department.id`, `Project.id`, `Task.id`) are preserved intact.
+2. Verify foreign key integrity (`Task.assigneeId`, `Task.assignedById`, `User.managerId`, `User.roleId`).
+3. Verify that the `Create:Tasks` permission remains linked to the appropriate roles in `RolePermission`.
+
+---
+
 ### Off-Site Backup Strategy & Production Readiness Plan
 
 Currently, backups created by `scripts/backup-production.sh` reside strictly on the local VPS disk (`/var/backups/cmd-dashboard`). This presents a single point of failure. The following architecture is required for production data resilience:
@@ -459,3 +805,66 @@ If admin user credentials need to be re-provisioned or updated from the CLI:
 ```bash
 node scripts/create-admin.js "admin@hartek.com" "SecurePassword123!" "System Administrator" "SA"
 ```
+
+---
+
+## 8. Staging Environment Operations, Testing & Validation Runbook
+
+### 8.1. Staging Architecture & Isolation Boundaries
+
+The staging environment is deployed in full isolation from the production environment on the target VPS:
+
+| Dimension | Production Environment | Staging Environment | Safety Isolation Mechanism |
+| :--- | :--- | :--- | :--- |
+| **Project Directory** | `/var/www/cmd-dashboard` | `/var/www/cmd-dashboard-staging` | Canonical path checks reject production dirs |
+| **PM2 Config** | `ecosystem.config.js` | `ecosystem.staging.config.js` | Dedicated file defining staging processes |
+| **Backend Process** | `cmd-backend` (port 4000) | `cmd-staging-backend` (port 4001) | Non-overlapping port and process identity |
+| **Frontend Process** | `cmd-frontend` (port 3000) | `cmd-staging-frontend` (port 3001) | Non-overlapping port and process identity |
+| **Database Target** | `cmd_office` (prod) | `cmd_office_staging` (isolated) | Scripts enforce staging qualifier & reject prod DB |
+| **Nginx Config** | `nginx/cmd-dashboard.conf` | `nginx/cmd-dashboard-staging.conf` | Separate vhost (`staging.yourdomain.com`) |
+| **Environment Files** | `.env`, `backend/.env` | `.env.staging`, `backend/.env.staging` | Ignored in Git; dedicated staging secrets |
+
+### 8.2. Staging Deployment & Rollback Execution
+
+```bash
+# 1. Execute automated staging deployment
+./scripts/deploy-staging.sh
+
+# 2. Emergency staging rollback (if needed)
+./scripts/rollback-staging.sh
+```
+
+**Automated Interruption Safety:**
+`scripts/rollback-staging.sh` registers traps for `SIGHUP`, `SIGINT`, `SIGTERM`, and failure `EXIT`. If interrupted or failed, it restores previous artifacts from `.old`, preserving `backend/dist.prev` and `frontend/.next.prev`.
+
+---
+
+### 8.3. Staging Test Plan & Task-Assignment Prerequisites (Finding F-05)
+
+When validating the staging environment, the end-to-end task delegation workflow must be tested using verified staging user personas.
+
+#### Test Account Prerequisites:
+1. **Ordinary-User JWT Requirement:**
+   - The test token must **NOT** be generated from an `Admin` or `Super Admin` account.
+   - The ordinary user must be assigned a business role (e.g., `Manager`, `Engineer`, `HOD`) in the `User` table.
+   - The user's role must affirmatively contain the `Create:Tasks` permission mapped in the `RolePermission` join table.
+2. **Organizational Hierarchy Requirement:**
+   - In accordance with the hierarchical task delegation engine, non-CMD business users can only assign tasks to employees who report directly to them.
+   - The target assignee's `User.managerId` must equal the assigning user's `User.id` (unless the assigner is `CMD`).
+3. **Assignee Role Requirement:**
+   - The target assignee must be an active, non-Admin user account.
+
+#### Canonical Task-Assignment HTTP Status Code Matrix (`POST /api/tasks`):
+
+The table below documents the exact HTTP response codes produced across controllers, guards, services, and validators:
+
+| Scenario / Test Case | Expected HTTP Status | Rejecting Component | Exact Error Condition & Reason |
+| :--- | :---: | :--- | :--- |
+| **Missing / Expired Token** | **`401 Unauthorized`** | `JwtAuthGuard` | Request lacks valid `Authorization: Bearer <jwt>` header or valid session cookie. |
+| **Admin Attempting Task Creation** | **`403 Forbidden`** | `PortalGuard` (`@UserPortalOnly()`) | Administrator accounts (`Admin`, `Super Admin`) are strictly forbidden from accessing business workflow endpoints. Message: *"Administrators cannot access business workflow endpoints. Please use a business account."* |
+| **Missing `Create:Tasks` Permission** | **`403 Forbidden`** | `PermissionsGuard` (`@RequirePermissions('Create:Tasks')`) | Authenticated business user role does not possess the `Create:Tasks` permission in `RolePermission`. Message: *"Forbidden resource"*. |
+| **Assignment to Non-Subordinate** | **`403 Forbidden`** | `TaskService.create()` | Non-CMD user attempts to assign a task to an employee who does not report to them (`assigneeUser.managerId !== userId`). Message: *"You can only assign tasks to employees who report directly to you."* |
+| **Assignment to Admin Account** | **`400 Bad Request`** | `RecipientValidator.validateInternalUserIds()` | `assigneeIds` contains UUID belonging to an account with role `Admin` or `Super Admin`. Message: *"Tasks cannot be assigned to Administrator accounts"*. |
+| **Malformed / Missing Assignee UUID** | **`400 Bad Request`** | `RecipientValidator.validateInternalUserIds()` | `assigneeIds` is empty, contains non-UUID strings, or contains a UUID not present in the database. |
+| **DTO Schema Validation Failure** | **`400 Bad Request`** | NestJS `ValidationPipe` | Missing mandatory fields (`title`, `pri`, `st`, `assigneeIds`) or invalid types. |
+| **Valid Subordinate Task Assignment** | **`201 Created`** | `TaskController.create()` | Ordinary user with `Create:Tasks` successfully creates tasks for a direct subordinate (or CMD for any user). Returns array of created `Task` objects with batch ID. |

@@ -29,8 +29,78 @@ if [ ! -f "ecosystem.staging.config.js" ]; then
     exit 1
 fi
 
+# Resolve canonical project directory
+CANONICAL_DIR="$(cd "$PROJECT_DIR" && pwd -P)"
 echo "  Directory:  $PROJECT_DIR"
+echo "  Canonical:  $CANONICAL_DIR"
 echo "  User:       $(whoami 2>/dev/null || echo 'unknown')"
+
+# 1. Reject known production installation directories
+KNOWN_PROD_DIRS=(
+    "/var/www/cmd-dashboard"
+    "/var/www/CMDDashboard"
+    "/var/www/cmd_office"
+    "/srv/cmd-dashboard"
+)
+if [ -n "${PROD_PROJECT_DIR:-}" ]; then
+    CANONICAL_PROD_TARGET="$(cd "$PROD_PROJECT_DIR" 2>/dev/null && pwd -P || echo "$PROD_PROJECT_DIR")"
+    KNOWN_PROD_DIRS+=("$CANONICAL_PROD_TARGET")
+fi
+
+for prod_dir in "${KNOWN_PROD_DIRS[@]}"; do
+    if [ "$CANONICAL_DIR" = "$prod_dir" ]; then
+        echo "  [CRITICAL ISOLATION BREACH] Staging preflight detected running in production directory: '$CANONICAL_DIR'!"
+        echo "  Executing staging scripts inside the production directory is strictly forbidden."
+        exit 1
+    fi
+done
+
+# 2. Reject if directory basename indicates a production root
+DIR_BASENAME="$(basename "$CANONICAL_DIR")"
+LOWER_DIR_BASENAME=$(echo "$DIR_BASENAME" | tr '[:upper:]' '[:lower:]')
+case "$LOWER_DIR_BASENAME" in
+    cmd-dashboard|cmddashboard|cmd_office|cmdoffice)
+        echo "  [CRITICAL ISOLATION BREACH] Staging cannot run in a production-named directory ('$DIR_BASENAME')!"
+        echo "  Staging directory must affirmatively identify as staging (e.g. cmd-dashboard-staging)."
+        exit 1
+        ;;
+esac
+
+# 3. Positive verification of approved staging directory
+LOWER_CANONICAL_DIR=$(echo "$CANONICAL_DIR" | tr '[:upper:]' '[:lower:]')
+IS_APPROVED_STAGING_DIR=0
+
+if [ -n "${STAGING_PROJECT_DIR:-}" ]; then
+    CANONICAL_STAGING_TARGET="$(cd "$STAGING_PROJECT_DIR" 2>/dev/null && pwd -P || echo "$STAGING_PROJECT_DIR")"
+    if [ "$CANONICAL_DIR" = "$CANONICAL_STAGING_TARGET" ]; then
+        IS_APPROVED_STAGING_DIR=1
+    fi
+fi
+
+if [[ "$LOWER_CANONICAL_DIR" =~ (staging|stage|test) ]]; then
+    IS_APPROVED_STAGING_DIR=1
+fi
+
+if [ "${ALLOW_CUSTOM_STAGING_DIR:-0}" = "1" ]; then
+    IS_APPROVED_STAGING_DIR=1
+fi
+
+if [ "$IS_APPROVED_STAGING_DIR" -ne 1 ]; then
+    echo "  [CRITICAL ERROR] Current directory '$CANONICAL_DIR' is not an approved staging installation directory!"
+    echo "  Staging must run in a directory identifying as staging (e.g. /var/www/cmd-dashboard-staging) or matching STAGING_PROJECT_DIR."
+    exit 1
+fi
+
+# 4. Verify ecosystem.staging.config.js defines dedicated staging process names and not production names
+if ! grep -q "cmd-staging-backend" ecosystem.staging.config.js || ! grep -q "cmd-staging-frontend" ecosystem.staging.config.js; then
+    echo "  [CRITICAL ERROR] ecosystem.staging.config.js is missing required staging process names ('cmd-staging-backend', 'cmd-staging-frontend')!"
+    exit 1
+fi
+
+if grep -E "name:[[:space:]]*['\"]cmd-backend['\"]" ecosystem.staging.config.js || grep -E "name:[[:space:]]*['\"]cmd-frontend['\"]" ecosystem.staging.config.js; then
+    echo "  [CRITICAL ERROR] ecosystem.staging.config.js improperly defines production process names ('cmd-backend', 'cmd-frontend')!"
+    exit 1
+fi
 
 # ------------------------------------------------------------------------------
 # STEP 2: REQUIRED TOOL AVAILABILITY (FAIL-CLOSED)

@@ -16,6 +16,59 @@ echo "Directory: $PROJECT_DIR"
 echo "======================================================================"
 
 # ------------------------------------------------------------------------------
+# STEP 0: CANONICAL DIRECTORY IDENTITY & FAIL-CLOSED PROTECTION
+# ------------------------------------------------------------------------------
+CANONICAL_DIR="$(cd "$PROJECT_DIR" && pwd -P)"
+KNOWN_PROD_DIRS=(
+    "/var/www/cmd-dashboard"
+    "/var/www/CMDDashboard"
+    "/var/www/cmd_office"
+    "/srv/cmd-dashboard"
+)
+if [ -n "${PROD_PROJECT_DIR:-}" ]; then
+    CANONICAL_PROD_TARGET="$(cd "$PROD_PROJECT_DIR" 2>/dev/null && pwd -P || echo "$PROD_PROJECT_DIR")"
+    KNOWN_PROD_DIRS+=("$CANONICAL_PROD_TARGET")
+fi
+
+for prod_dir in "${KNOWN_PROD_DIRS[@]}"; do
+    if [ "$CANONICAL_DIR" = "$prod_dir" ]; then
+        echo "  [CRITICAL ISOLATION BREACH] Staging deployment attempted in production directory: '$CANONICAL_DIR'!"
+        echo "  Refusing deployment to protect production application."
+        exit 1
+    fi
+done
+
+DIR_BASENAME="$(basename "$CANONICAL_DIR")"
+LOWER_DIR_BASENAME=$(echo "$DIR_BASENAME" | tr '[:upper:]' '[:lower:]')
+case "$LOWER_DIR_BASENAME" in
+    cmd-dashboard|cmddashboard|cmd_office|cmdoffice)
+        echo "  [CRITICAL ISOLATION BREACH] Staging cannot deploy in a production-named directory ('$DIR_BASENAME')!"
+        echo "  Staging directory must affirmatively identify as staging (e.g. cmd-dashboard-staging)."
+        exit 1
+        ;;
+esac
+
+LOWER_CANONICAL_DIR=$(echo "$CANONICAL_DIR" | tr '[:upper:]' '[:lower:]')
+IS_APPROVED_STAGING_DIR=0
+if [ -n "${STAGING_PROJECT_DIR:-}" ]; then
+    CANONICAL_STAGING_TARGET="$(cd "$STAGING_PROJECT_DIR" 2>/dev/null && pwd -P || echo "$STAGING_PROJECT_DIR")"
+    if [ "$CANONICAL_DIR" = "$CANONICAL_STAGING_TARGET" ]; then
+        IS_APPROVED_STAGING_DIR=1
+    fi
+fi
+if [[ "$LOWER_CANONICAL_DIR" =~ (staging|stage|test) ]]; then
+    IS_APPROVED_STAGING_DIR=1
+fi
+if [ "${ALLOW_CUSTOM_STAGING_DIR:-0}" = "1" ]; then
+    IS_APPROVED_STAGING_DIR=1
+fi
+if [ "$IS_APPROVED_STAGING_DIR" -ne 1 ]; then
+    echo "  [CRITICAL ERROR] Current directory '$CANONICAL_DIR' is not an approved staging installation directory!"
+    echo "  Staging must run in a directory identifying as staging (e.g. /var/www/cmd-dashboard-staging) or matching STAGING_PROJECT_DIR."
+    exit 1
+fi
+
+# ------------------------------------------------------------------------------
 # STEP 1: RUN PREFLIGHT VALIDATION (FAIL-CLOSED)
 # ------------------------------------------------------------------------------
 echo "==> Step 1: Running Staging Preflight Checks..."
