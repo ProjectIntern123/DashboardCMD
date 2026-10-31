@@ -5,6 +5,7 @@
 # ==============================================================================
 set -euo pipefail
 
+PROJECT_DIR="$(pwd)"
 ROLLBACK_SUCCESS=0
 ROLLBACK_CLEANUP_DONE=0
 
@@ -17,17 +18,22 @@ cleanup_rollback_on_failure() {
     trap - EXIT SIGHUP SIGINT SIGTERM
     set +e
     if [ "$ROLLBACK_SUCCESS" -ne 1 ]; then
-        echo "  [ROLLBACK CLEANUP] Cleaning temporary recovery artifacts..."
+        echo "  [ROLLBACK CLEANUP] Rollback did not complete successfully (Exit code: $exit_code)."
+        echo "  Preserving all recovery artifacts (backend/dist.prev, frontend/.next.prev, .old, metadata)."
         rm -rf backend/dist.rollback.tmp frontend/.next.rollback.tmp
-        if [ ! -d "backend/dist" ] && [ -d "backend/dist.old" ]; then
-            mv "backend/dist.old" "backend/dist" 2>/dev/null || true
-        else
-            rm -rf backend/dist.old
+        if [ ! -d "backend/dist" ]; then
+            if [ -d "backend/dist.rollback.bak" ]; then
+                mv "backend/dist.rollback.bak" "backend/dist" 2>/dev/null || true
+            elif [ -d "backend/dist.old" ]; then
+                mv "backend/dist.old" "backend/dist" 2>/dev/null || true
+            fi
         fi
-        if [ ! -d "frontend/.next" ] && [ -d "frontend/.next.old" ]; then
-            mv "frontend/.next.old" "frontend/.next" 2>/dev/null || true
-        else
-            rm -rf frontend/.next.old
+        if [ ! -d "frontend/.next" ]; then
+            if [ -d "frontend/.next.rollback.bak" ]; then
+                mv "frontend/.next.rollback.bak" "frontend/.next" 2>/dev/null || true
+            elif [ -d "frontend/.next.old" ]; then
+                mv "frontend/.next.old" "frontend/.next" 2>/dev/null || true
+            fi
         fi
     fi
     exit "$exit_code"
@@ -145,29 +151,23 @@ if [ ! -d "backend/dist.rollback.tmp" ] || [ ! -d "frontend/.next.rollback.tmp" 
     exit 1
 fi
 
-# 4. Atomic directory swap (only executed after all prerequisites and copies are verified)
-rm -rf backend/dist.old frontend/.next.old
+# 4. Sequential directory swap (only executed after all prerequisites and copies are verified)
+# Preserve existing .old directories as .old.bak so no recovery copies are destroyed before verification
+[ -d "backend/dist.old" ] && mv "backend/dist.old" "backend/dist.old.bak"
 [ -d "backend/dist" ] && mv "backend/dist" "backend/dist.old"
 mv backend/dist.rollback.tmp backend/dist
-rm -rf backend/dist.old
 
+[ -d "frontend/.next.old" ] && mv "frontend/.next.old" "frontend/.next.old.bak"
 [ -d "frontend/.next" ] && mv "frontend/.next" "frontend/.next.old"
 mv frontend/.next.rollback.tmp frontend/.next
-rm -rf frontend/.next.old
 
 echo "  [SUCCESS] Previous production artifacts restored successfully into active paths."
 
-# 5. Restore Git branch non-destructively to recorded release commit
-CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "main")
-echo "  Restoring branch $CURRENT_BRANCH non-destructively to recorded release commit: $PREV_COMMIT"
-if ! git checkout -B "$CURRENT_BRANCH" "$PREV_COMMIT"; then
-    echo "  [CRITICAL ERROR] Non-destructive checkout of $PREV_COMMIT to branch $CURRENT_BRANCH failed."
-    echo "  Blocker: Uncommitted or conflicting files prevented checkout. No files were discarded."
-    exit 1
-fi
-
-echo "$PREV_COMMIT" > .current-deployed-commit
-rm -f .prev-deployed-commit
+# 5. Git Safety: PM2 executes directly from compiled directories (backend/dist and frontend/.next).
+# Rollback does NOT modify the Git checkout or detach HEAD to protect future deployments.
+CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "detached")
+echo "  [GIT SAFETY] Preserving current Git branch/checkout ('$CURRENT_BRANCH')."
+echo "  Application runtime restored to artifacts matching commit: $PREV_COMMIT"
 
 # ------------------------------------------------------------------------------
 # STEP 3: RELOAD PRODUCTION SERVICES
@@ -189,20 +189,73 @@ fi
 echo "==> Step 4: Verifying Rollback Health..."
 
 # Reliable multi-tool HTTP probe helper: uses curl if available, falls back to node http
+# Enforces bounded timeouts and validates that backend settings endpoints return valid JSON (rejecting 401/403/500)
 check_http_endpoint() {
     local url="$1"
     if command -v curl &> /dev/null; then
-        curl -s -f "$url" > /dev/null 2>&1
-        return $?
+        if [[ "$url" == *"api/settings/public"* ]]; then
+            local probe_tmp="$PROJECT_DIR/.releases/probe_rollback_$$.json"
+            mkdir -p "$PROJECT_DIR/.releases"
+            local http_code
+            http_code=$(curl -s -o "$probe_tmp" -w "%{http_code}" --connect-timeout 5 --max-time 10 "$url" 2>/dev/null || echo "000")
+            if [ "$http_code" != "200" ]; then
+                rm -f "$probe_tmp"
+                return 1
+            fi
+            if command -v node &> /dev/null; then
+                if node -e '
+                    try {
+                        const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+                        if (d && typeof d === "object" && (d.app_name !== undefined || d.login_heading !== undefined)) {
+                            process.exit(0);
+                        }
+                    } catch(e) {}
+                    process.exit(1);
+                ' "$probe_tmp" >/dev/null 2>&1; then
+                    rm -f "$probe_tmp"
+                    return 0
+                else
+                    rm -f "$probe_tmp"
+                    return 1
+                fi
+            else
+                if grep -q '"app_name"' "$probe_tmp" 2>/dev/null; then
+                    rm -f "$probe_tmp"
+                    return 0
+                else
+                    rm -f "$probe_tmp"
+                    return 1
+                fi
+            fi
+        else
+            curl -s -f --connect-timeout 5 --max-time 10 "$url" > /dev/null 2>&1
+            return $?
+        fi
     elif command -v node &> /dev/null; then
         node -e '
             const http = require("http");
             const url = process.argv[1];
-            const req = http.get(url, { timeout: 3000 }, (res) => {
-                if (res.statusCode >= 200 && res.statusCode < 400) {
-                    process.exit(0);
+            const isSettings = url.includes("api/settings/public");
+            const req = http.get(url, { timeout: 5000 }, (res) => {
+                if (isSettings) {
+                    if (res.statusCode !== 200) process.exit(1);
+                    let body = "";
+                    res.on("data", c => body += c);
+                    res.on("end", () => {
+                        try {
+                            const d = JSON.parse(body);
+                            if (d && typeof d === "object" && (d.app_name !== undefined || d.login_heading !== undefined)) {
+                                process.exit(0);
+                            }
+                        } catch(e) {}
+                        process.exit(1);
+                    });
                 } else {
-                    process.exit(1);
+                    if (res.statusCode >= 200 && res.statusCode < 400) {
+                        process.exit(0);
+                    } else {
+                        process.exit(1);
+                    }
                 }
             });
             req.on("error", () => process.exit(1));
@@ -258,6 +311,9 @@ done
 
 if [ "$HEALTHY" = true ]; then
     ROLLBACK_SUCCESS=1
+    echo "$PREV_COMMIT" > .current-deployed-commit
+    rm -f .prev-deployed-commit
+    rm -rf backend/dist.old backend/dist.old.bak frontend/.next.old frontend/.next.old.bak
     echo "======================================================================"
     echo "[ROLLBACK COMPLETE & VERIFIED] Application restored to previous working version."
     echo "======================================================================"
@@ -265,6 +321,7 @@ else
     echo "======================================================================"
     echo "[CRITICAL ERROR] Rollback health check failed! Application did not respond 200 OK."
     echo "Do NOT assume the rollback succeeded. Inspect 'pm2 logs' immediately."
+    echo "Recovery metadata and fallback artifacts (.old, .prev) are preserved for retry."
     echo "======================================================================"
     exit 1
 fi

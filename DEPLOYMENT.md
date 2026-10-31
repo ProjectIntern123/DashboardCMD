@@ -95,9 +95,14 @@ Always generate a verified database and application snapshot before deploying co
 ./scripts/backup-production.sh
 ```
 - Performs a full `pg_dump` of PostgreSQL, piping directly through `gzip`.
-- Verifies archive integrity with `gzip -t` and checks for the PostgreSQL completion marker.
-- Creates an application source archive.
-- Retains at least 5 snapshots in `/var/backups/cmd-dashboard` (or `$HOME/backups/cmd-dashboard`).
+- Verifies archive integrity with `gzip -t` and checks for the PostgreSQL completion marker (`PostgreSQL database dump complete`).
+  > [!NOTE]
+  > Database archive verification confirms structural integrity and compression validity. It does not perform a live restore drill against an active database to protect existing production data.
+- Creates an application source archive that strictly excludes sensitive files:
+  - Excludes `.env*`, `backend/.env*`, `frontend/.env*`
+  - Excludes private keys and certificates (`*.key`, `*.pem`, `*.crt`)
+  - Excludes `uploads/` and build directories (`node_modules/`, `.next/`, `dist/`)
+- **Retention Protection:** Destructive backup pruning is **disabled by default** (`ENABLE_BACKUP_PRUNING=false`) to protect all existing backup archives. Existing backups are never deleted during routine operations.
 
 #### STEP 2: Execute Canonical Deployment
 Run the non-interactive automated deployment script inside a persistent terminal session (`tmux` or `screen`):
@@ -119,20 +124,45 @@ tmux new -s deploy || tmux attach -t deploy
 3. **Non-Blocking Concurrency Lock:** Automatically acquires an exclusive non-blocking lock (`flock` on `.releases/deploy.lock`) to prevent concurrent deployment executions from corrupting Git state, build caches, or active runtime artifacts.
 4. **Pre-Build Disk Space Preflight:** Strictly validates that at least 2.0 GB (2,097,152 KB) free disk space is available before compiling candidate builds or snapshotting artifacts (enforcing a 1.5 GB minimum floor if overridden).
 5. **Signal & Interruption Hardening:** Catches `SIGHUP` (terminal disconnect), `SIGINT` (Ctrl+C), and `SIGTERM` signals; automatically cleans temporary candidate artifacts and non-destructively reverts Git `HEAD` if interrupted prior to activation.
-6. **Migration Lock:** Scans release diff for migration files; if unbaselined migrations are found, deployment **halts immediately** before touching Git or database state.
-7. **Isolated Candidate Compilation:** Compiles `backend/dist.candidate` and `frontend/.next.candidate` in isolated directories without modifying active runtime artifacts.
-8. **Entry Point Verification:** Validates that candidate builds contain required manifests and entry points (`src/main.js`, `src/app.module.js`, `BUILD_ID`, `server`, `static`).
-9. **Atomic Directory Swap:** Preserves active build to `.prev` and swaps candidate artifacts into production paths.
-10. **Process Reload:** Reloads PM2 zero-downtime cluster via `pm2 reload ecosystem.config.js`.
-11. **Automated Health Probes:** Probes `/api/settings/public` (port 4000) and `/` (port 3000).
-    - If health checks fail across 5 attempts, **automatically invokes `scripts/rollback-production.sh`**.
+6. **Migration & Schema Lock:** Scans release diff for migration files (`backend/prisma/migrations/`) or schema changes (`backend/prisma/schema.prisma`). If found, deployment **halts immediately** before touching Git or database state.
+7. **Isolated Candidate Worktree Build Architecture:**
+   - The candidate commit is prepared inside an isolated Git worktree (`.releases/candidate-worktree`), leaving the active source checkout and branch (`main`) **100% untouched** at `$CURRENT_COMMIT`.
+   - Build failures, compilation aborts, or lint errors cannot leave the active checkout detached or modify tracked files.
+   - **Dependency Linking & Residual Write-Through Risk:** Candidate worktrees use symlinks to the existing production dependency directories (`backend/node_modules` and `frontend/node_modules`). The Step 3 Dependency Lock checks for dependency-manifest changes (`package.json` and `package-lock.json`), and Step 3 Schema Lock blocks schema changes to avoid `@prisma/client` regeneration. However, standard symlinks do not enforce operating-system-level write protection. Candidate build tools could potentially write through these symlinks, and this residual risk has not been eliminated by the dependency lock.
+   - **Candidate Artifact Extraction:** Once NestJS and Next.js builds are verified inside the isolated worktree, compiled artifacts are staged into `backend/dist.candidate` and `frontend/.next.candidate` (both ignored by `.gitignore`), and the temporary worktree is pruned.
+8. **Entry Point Verification:** Validates that candidate builds contain required manifests and entry points (`src/main.js`, `src/app.module.js`, `BUILD_ID`, `server`, `static`). If either backend or frontend candidate validation fails, deployment aborts immediately without activating either component.
+9. **Interruption-Safe Sequential Directory Activation:**
+   - Active release artifacts are snapshotted to `backend/dist.prev` and `frontend/.next.prev`.
+   - Directory activation is sequential: backend is swapped first, followed by frontend. Any prior `.old` directory is preserved as `.old.bak` so that no recovery copies are destroyed before verification.
+   - **Preservation Guarantee:** Fallback `.old` and `.prev` directories are preserved throughout PM2 reload and health checks. They are only removed after both applications pass health verification.
+10. **Process Reload & Sequential Reload Risk:**
+    - Reloads PM2 cluster via `pm2 reload ecosystem.config.js`.
+    - *Sequential Activation Risk:* PM2 reloads `cmd-backend` and `cmd-frontend` sequentially. During the brief reload window (typically 2-4 seconds), the updated backend may receive requests from the previous frontend, or vice versa. Because database migrations, schema alterations, and dependency updates are blocked in routine deployments, all API changes between adjacent releases must maintain backward compatibility.
+11. **Automated Multi-Point Health Probes:**
+    - Enforces bounded connection and request timeouts (`--connect-timeout 5 --max-time 10`, 5000ms node fallback).
+    - **Backend Response Content Validation:** Probes `/api/settings/public` (port 4000) and strictly verifies that the response returns HTTP 200 OK and valid JSON containing `app_name` or `login_heading`. HTTP 401 Unauthorized, HTTP 403 Forbidden, HTTP 500 Internal Server Error, or HTML error pages are rejected as failures.
+    - **Frontend Release Identity Verification:** Probes `http://127.0.0.1:3000/` and validates that the candidate's specific `BUILD_ID` manifest (`/_next/static/${CANDIDATE_BUILD_ID}/_buildManifest.js`) is served, ensuring stale PM2 workers cannot cause false-positive health verification.
+    - If health checks fail across 5 attempts (15 seconds), **automatically invokes `scripts/rollback-production.sh`** and preserves all recovery artifacts and metadata.
+
+#### Host Interruption / Uncatchable Signal Recovery (SIGKILL / OOM):
+If the deployment process is terminated by an uncatchable signal (`SIGKILL`, host kernel OOM killer, or host power interruption) where exit traps cannot run:
+1. The active repository checkout remains cleanly attached to `main` at `$CURRENT_COMMIT`.
+2. Temporary worktrees in `.releases/candidate-worktree` are ignored by `.gitignore` and do not dirty `git status`.
+3. If `.releases/deploy.lock` is left held by a terminated PID, the next deployment run atomically detects the stale lock and reclaims it safely.
+4. If a stale worktree is left behind, the next deployment automatically detects and removes it via `git worktree remove --force .releases/candidate-worktree && git worktree prune`.
+5. Manual cleanup command (if desired):
+   ```bash
+   git worktree remove --force .releases/candidate-worktree 2>/dev/null || rm -rf .releases/candidate-worktree
+   git worktree prune
+   git status  # Verified clean working tree on main
+   ```
 
 ---
 
 ## 5. Emergency Rollback Procedures
 
 ### Automated Rollback (Self-Healing)
-If `deploy-production.sh` detects that application endpoints fail to respond with HTTP 200 after deployment, it immediately disarms failure traps and executes `scripts/rollback-production.sh`.
+If `deploy-production.sh` detects that application endpoints fail to pass verification after deployment, it immediately disarms failure traps, preserves recovery snapshots, and executes `scripts/rollback-production.sh`.
 
 ### Manual Emergency Rollback
 If an issue is detected after deployment approval, execute:
@@ -140,11 +170,16 @@ If an issue is detected after deployment approval, execute:
 ./scripts/rollback-production.sh
 ```
 **What the Rollback Script Does:**
-1. Verifies the existence and checksum integrity of `backend/dist.prev` and `frontend/.next.prev`.
-2. Atomically swaps `.prev` artifacts back into active production directories (`backend/dist`, `frontend/.next`).
-3. Reads the previously recorded commit from `.releases/previous-release.json` (or `.prev-deployed-commit`) and non-destructively checks out that commit.
-4. Reloads PM2 processes (`pm2 reload ecosystem.config.js || pm2 restart all`).
-5. Re-probes endpoints to verify system recovery.
+1. **Safety Preflight:** Checks working tree cleanliness, permitting only legitimate `.prev` snapshots and release metadata.
+2. **Artifact Verification:** Verifies the presence and structural integrity of `backend/dist.prev` and `frontend/.next.prev` (`src/main.js`, `BUILD_ID`).
+3. **Metadata Validation:** Reads the previous release commit from `.prev-deployed-commit` or `.releases/previous-release.json` and verifies that it is a valid Git commit. If metadata is missing or corrupted, rollback fails closed to prevent guessing commits.
+4. **Non-Destructive Sequential Restoration:**
+   - Active production directories are preserved to `.old.bak`.
+   - Preserved `.prev` artifacts are copied (not moved) into active paths, ensuring repeated rollback attempts can be executed idempotently without destroying recovery files.
+   - **Git Checkout Safety:** PM2 executes strictly from compiled directories (`backend/dist` and `frontend/.next`). Rollback restores the compiled application runtime **without altering the active Git checkout or detaching HEAD**. The server remains cleanly on `main` so that subsequent automated deployments succeed without manual Git intervention.
+5. **Process Reload:** Reloads PM2 processes (`pm2 reload ecosystem.config.js || pm2 restart all`).
+6. **Health Verification:** Verifies backend settings JSON payload and frontend responsiveness with bounded timeouts.
+7. **Recovery Preservation:** If rollback verification succeeds, `.current-deployed-commit` is updated, `.old` and `.old.bak` are cleaned up, and `.prev` artifacts are safely maintained. If rollback verification fails, all recovery files (`.prev`, `.old`, `.prev-deployed-commit`) are preserved for operator inspection.
 
 ---
 
@@ -152,128 +187,377 @@ If an issue is detected after deployment approval, execute:
 
 > [!CRITICAL]
 > **Data Preservation Hazard & Non-Merge Semantics:**
-> Plain SQL backup files (`.sql.gz`) produced by `pg_dump` contain direct `CREATE TABLE`, `ALTER TABLE`, and `INSERT INTO` statements without `--clean` drops.
-> A plain SQL dump is **not** a merge or differential patch. It **must never** be piped into an existing populated production database as a routine action.
-> Piping a dump into an active database will cause immediate primary key conflicts (`duplicate key value violates unique constraint`), foreign key violations, and partial state corruption.
-> Always follow the isolated verification procedure below before considering any production recovery.
+> Neither plain SQL dumps (`.sql.gz`) nor PostgreSQL custom archives (`.dump`) represent differential patches or data merges.
+> A database backup **must never** be restored or piped into an existing, populated production database (`cmd_office`) as a routine deployment action.
+> Restoring a dump into an active database will cause immediate primary key collisions (`duplicate key value violates unique constraint`), foreign key violations, and partial state corruption.
+> Always execute restoration tests inside an isolated disposable database or dedicated staging environment following the procedures below.
 
 ---
 
-### Procedure A: Isolated Verification & Non-Destructive Restore Drill (Default)
+### 6.1 Backup Format Specification & Container Integrity Verification
 
-Use this procedure to verify backup integrity, test data completeness, or conduct disaster recovery drills without touching the active production database.
+The HARTEK CMD system supports two distinct PostgreSQL archive formats. Each format requires a specific integrity check and restoration utility:
+
+| Format Attribute | Gzip Plain-Text SQL (`.sql.gz`) | PostgreSQL Custom Archive (`.dump` / `.fc`) |
+| :--- | :--- | :--- |
+| **Origin in Pipeline** | Produced by `scripts/backup-production.sh` (`pg_dump "$URL" \| gzip > db-backup-$TIMESTAMP.sql.gz`) | Historical production baseline dumps produced via `pg_dump -Fc` |
+| **File Structure** | Gzip-compressed plain-text SQL statements | Binary archive containing internal Table of Contents (TOC) and compressed data blocks |
+| **Integrity Check** | `gzip -t "$ARCHIVE"` + completion marker check | `pg_restore -l "$ARCHIVE" > /dev/null` (verifies readable TOC) |
+| **Restore Utility** | `gzip -dc "$ARCHIVE" \| psql -U postgres -d "$TARGET_DB" -v ON_ERROR_STOP=1` | `pg_restore -U postgres -d "$TARGET_DB" --no-owner --no-privileges --exit-on-error "$ARCHIVE"` |
+| **Piped `psql` Safe?** | **YES** (Standard SQL stream) | **NO** (Fails with `ERROR: syntax error at or near "PGDMP"`) |
+| **Selective Restore Support** | No (requires manual text stream manipulation) | Yes (supports `-t`, `-L`, `--schema`, and parallel worker `-j` flags) |
+
+> [!NOTE]
+> **Why `--clean` Is Not Required During Target Initialization:**
+> In Procedures A, B, and C, an empty target database is created fresh (`createdb`) before restoration.
+> Because an empty database contains no pre-existing tables, indexes, or sequences, the `--clean` (`DROP` objects before recreating) and `--if-exists` flags are completely redundant.
+> Restoring into a fresh database without `--clean` avoids noisy `DROP ... does not exist` notices, while `--no-owner` and `--no-privileges` allow objects to restore cleanly into local environments regardless of remote role naming.
+
+#### Format Detection Logic
+When operating on an arbitrary backup archive, detect the file format using container magic bytes rather than file extensions:
+
+```bash
+# Read initial 5 bytes of archive header
+MAGIC_HEADER=$(head -c 5 "$BACKUP_ARCHIVE" 2>/dev/null || echo "")
+
+if [[ "$MAGIC_HEADER" == "PGDMP"* ]]; then
+    ARCHIVE_FORMAT="PG_CUSTOM_DUMP"
+elif gzip -t "$BACKUP_ARCHIVE" 2>/dev/null; then
+    if gzip -dc "$BACKUP_ARCHIVE" | head -n 30 | grep -qE "(PostgreSQL database dump|SET |CREATE )"; then
+        ARCHIVE_FORMAT="GZIP_SQL"
+    else
+        ARCHIVE_FORMAT="UNKNOWN"
+    fi
+else
+    ARCHIVE_FORMAT="UNKNOWN"
+fi
+```
+
+---
+
+### 6.2 Multi-Stage Verification Boundary: From Container to Production Recovery
+
+Operational safety requires maintaining a strict distinction between the four progressive levels of backup verification:
+
+```mermaid
+graph TD
+    Stage1["Stage 1: Container Integrity Validation<br/>(gzip -t / pg_restore -l)<br/>Proves file is uncorrupted on disk"] --> Stage2["Stage 2: Disposable Database Drill<br/>(Procedure A)<br/>Proves SQL syntax & constraint validity"]
+    Stage2 --> Stage3["Stage 3: Application Health & Query Verification<br/>(Prisma queries & HTTP smoke tests)<br/>Proves business logic compatibility"]
+    Stage3 --> Stage4["Stage 4: Disaster Recovery Runbook<br/>(Procedure B)<br/>Catastrophic recovery only — requires approval"]
+```
+
+> [!WARNING]
+> **Container Integrity vs. Database Restoration Proof:**
+> A successful archive container check (`gzip -t` or `pg_restore -l`) proves **ONLY** that:
+> 1. The container file is physically uncorrupted on disk.
+> 2. The compressed blocks and internal Table of Contents are readable without I/O or CRC errors.
+>
+> A successful container check **DOES NOT** establish:
+> - That the SQL statements or custom archive objects are syntactically valid for the target PostgreSQL server version.
+> - That tables, columns, constraints, and sequences match active application Prisma schema migrations.
+> - That transactional data, foreign keys, or unique indexes will restore without constraint violations.
+> - That application services (NestJS API / Next.js UI) can successfully authenticate, query, or mutate data in the restored state.
+>
+> True restoration validity can **only** be established by completing a full restoration into an isolated database, executing post-restore data assertions, and performing application health probes.
+
+1. **Stage 1: Physical Archive Integrity Validation:**
+   - Tests container structure, CRC checksums, and Table of Contents (`gzip -t` or `pg_restore -l`).
+   - Confirms the archive is not truncated or corrupted on disk.
+   - **Boundary Notice:** Proves *only* container readability; does *not* prove that data can be restored or queried.
+2. **Stage 2: Isolated Scratch Database Restoration Drill (Procedure A):**
+   - Restores the archive into a temporary, uniquely named disposable database.
+   - Proves that SQL DDL/DML, custom TOC items, indexes, and foreign keys load cleanly without constraint errors.
+   - Confirms basic row existence in core tables (`User`, `Role`, `_prisma_migrations`).
+3. **Stage 3: Application-Level Verification & Integration Testing:**
+   - Boots backend and frontend test runners against the restored dataset (after applying staging sanitization).
+   - Proves that password hashes, JWT verification, multi-table relations, and business logic operate correctly.
+   - **Boundary Notice:** Row count checks alone do not establish application correctness.
+4. **Stage 4: Controlled Production Disaster Recovery (Procedure B):**
+   - Documented operational protocol reserved strictly for complete data destruction scenarios.
+   - Alters production database state. Must never be executed as part of routine deployment.
+
+---
+
+### Procedure A: Isolated Verification & Disposable Scratch Database Restoration Drill (Default)
+
+Use this non-destructive procedure to verify backup data completeness, test new schema migrations, or conduct operator disaster-recovery drills without touching production or staging databases.
+
+> [!NOTE]
+> **Operational Note:** This procedure is a documented operational protocol. No live database restoration drill has been executed during this pre-deployment review.
 
 #### Step 1: Locate and Validate Backup Archive Integrity
 ```bash
-# Set strict pipeline failure handling
 set -euo pipefail
 
-# Locate latest verified backup archive
-BACKUP_DIR="/var/backups/cmd-dashboard"
-LATEST_BACKUP=$(ls -td "$BACKUP_DIR"/backup-* 2>/dev/null | head -n 1)
-SQL_GZ="$LATEST_BACKUP/$(basename "$LATEST_BACKUP" | sed 's/backup-/db-backup-/').sql.gz"
+BACKUP_DIR="${BACKUP_DIR:-/var/backups/cmd-dashboard}"
 
-echo "Evaluating candidate archive: $SQL_GZ"
+# Explicit archive selection:
+# When verifying a specific backup—especially the known historical production baseline:
+#   /var/backups/cmd-dashboard/cmd_office_predeploy_20261030_110915.dump
+# always supply the exact file path as an argument ($1).
+BACKUP_ARCHIVE="${1:-${BACKUP_ARCHIVE:-}}"
 
-# 1. Test gzip archive integrity (CRC-32 and compressed block validation)
-gzip -t "$SQL_GZ" && echo "[OK] Archive gzip integrity valid."
+if [ -z "$BACKUP_ARCHIVE" ]; then
+    echo "  [DISCOVERY] No explicit archive path passed. Attempting automated baseline discovery..."
+    # 1. Check for specific known production baseline archive
+    if [ -f "$BACKUP_DIR/cmd_office_predeploy_20261030_110915.dump" ]; then
+        BACKUP_ARCHIVE="$BACKUP_DIR/cmd_office_predeploy_20261030_110915.dump"
+        echo "  [DISCOVERY] Located known historical baseline: $BACKUP_ARCHIVE"
+    else
+        # 2. Check for latest automated deployment backup subdirectory
+        LATEST_DIR=$(ls -td "$BACKUP_DIR"/backup-* 2>/dev/null | head -n 1)
+        if [ -n "$LATEST_DIR" ]; then
+            if [ -f "$LATEST_DIR/$(basename "$LATEST_DIR" | sed 's/backup-/db-backup-/').sql.gz" ]; then
+                BACKUP_ARCHIVE="$LATEST_DIR/$(basename "$LATEST_DIR" | sed 's/backup-/db-backup-/').sql.gz"
+            elif [ -f "$LATEST_DIR/$(basename "$LATEST_DIR" | sed 's/backup-/db-backup-/').dump" ]; then
+                BACKUP_ARCHIVE="$LATEST_DIR/$(basename "$LATEST_DIR" | sed 's/backup-/db-backup-/').dump"
+            fi
+        fi
+    fi
+fi
 
-# 2. Verify dump completion marker (guards against truncated dumps)
-gzip -dc "$SQL_GZ" | tail -n 25 | grep -q "PostgreSQL database dump complete" && echo "[OK] PostgreSQL completion marker present."
+if [ -z "$BACKUP_ARCHIVE" ]; then
+    echo "[CRITICAL ERROR] No backup archive located automatically under '$BACKUP_DIR'!" >&2
+    echo "Archive discovery is ambiguous. An explicit path must be provided:" >&2
+    echo "  Usage: ./restore-drill.sh /var/backups/cmd-dashboard/cmd_office_predeploy_20261030_110915.dump" >&2
+    exit 1
+fi
+
+if [ ! -f "$BACKUP_ARCHIVE" ] || [ ! -s "$BACKUP_ARCHIVE" ]; then
+    echo "[CRITICAL ERROR] Target backup file '$BACKUP_ARCHIVE' is missing or 0 bytes!" >&2
+    exit 1
+fi
+
+echo "Evaluating candidate archive: $BACKUP_ARCHIVE"
+
+# Format detection and format-specific container validation
+MAGIC_HEADER=$(head -c 5 "$BACKUP_ARCHIVE" 2>/dev/null || echo "")
+
+if [[ "$MAGIC_HEADER" == "PGDMP"* ]]; then
+    ARCHIVE_FORMAT="PG_CUSTOM_DUMP"
+    echo "  Detected Format: PostgreSQL Custom Archive (.dump)"
+    if ! pg_restore -l "$BACKUP_ARCHIVE" > /dev/null 2>&1; then
+        echo "[CRITICAL ERROR] Archive container check failed: Invalid or corrupted custom dump TOC!" >&2
+        exit 1
+    fi
+    echo "  [OK] Custom dump Table of Contents verified readable."
+
+elif gzip -t "$BACKUP_ARCHIVE" 2>/dev/null; then
+    ARCHIVE_FORMAT="GZIP_SQL"
+    echo "  Detected Format: Gzip Plain-Text SQL (.sql.gz)"
+    if ! gzip -dc "$BACKUP_ARCHIVE" | tail -n 25 | grep -q "PostgreSQL database dump complete"; then
+        echo "[CRITICAL ERROR] Archive verification failed: Truncated dump (missing PostgreSQL completion marker)!" >&2
+        exit 1
+    fi
+    echo "  [OK] Gzip CRC integrity and PostgreSQL completion marker present."
+
+else
+    echo "[CRITICAL ERROR] Unrecognized or corrupted backup file format in '$BACKUP_ARCHIVE'!" >&2
+    exit 1
+fi
 ```
 
-#### Step 2: Create Isolated Verification Database
-Never use the production database (`cmd_office`) for verification. Always restore into a dedicated, isolated scratch database:
-
+#### Step 2: Create Explicit Disposable Scratch Database with Fail-Closed Guards
 ```bash
-VERIFY_DB="cmd_restore_verification_$(date +%Y%m%d_%H%M%S)"
+# Generate collision-resistant disposable scratch database name using timestamp and entropy
+VERIFY_DB="cmd_restore_verification_$(date +%Y%m%d_%H%M%S)_$RANDOM"
 
-# Create isolated database owned by postgres superuser
+# Positive safety assertion: database name must match collision-resistant scratch pattern
+if [[ ! "$VERIFY_DB" =~ ^cmd_restore_verification_[0-9]{8}_[0-9]{6}_[0-9]+$ ]]; then
+    echo "[CRITICAL ERROR] Generated database name '$VERIFY_DB' does not match safe verification pattern! Aborting." >&2
+    exit 1
+fi
+
+# Negative fail-closed guard: explicitly block production or staging targets
+if [ "$VERIFY_DB" = "cmd_office" ] || [ "$VERIFY_DB" = "cmd_office_staging" ]; then
+    echo "[CRITICAL ERROR] Refusing to create or target protected database '$VERIFY_DB'!" >&2
+    exit 1
+fi
+
 createdb -U postgres "$VERIFY_DB"
 echo "Created isolated verification database: $VERIFY_DB"
 ```
 
-#### Step 3: Execute Restoration into Isolated Database
-Execute the pipeline with strict error halting (`ON_ERROR_STOP=on`) and capture pipeline exit statuses:
-
+#### Step 3: Execute Restoration into Disposable Scratch Database
 ```bash
 set -o pipefail
+RESTORE_STATUS=0
 
-# Decompress and restore into verification database
-gzip -dc "$SQL_GZ" | psql -U postgres -d "$VERIFY_DB" -v ON_ERROR_STOP=1
+if [ "$ARCHIVE_FORMAT" = "GZIP_SQL" ]; then
+    echo "Restoring plain-text SQL archive into $VERIFY_DB via psql..."
+    set +e
+    gzip -dc "$BACKUP_ARCHIVE" | psql -U postgres -d "$VERIFY_DB" -v ON_ERROR_STOP=1
+    RESTORE_STATUS=$?
+    set -e
 
-RESTORE_STATUS=$?
-if [ "$RESTORE_STATUS" -ne 0 ]; then
-    echo "[CRITICAL ERROR] Database restoration pipeline failed with exit code: $RESTORE_STATUS"
-    exit 1
+elif [ "$ARCHIVE_FORMAT" = "PG_CUSTOM_DUMP" ]; then
+    echo "Restoring custom-format archive into $VERIFY_DB via pg_restore..."
+    set +e
+    pg_restore -U postgres \
+        --dbname="$VERIFY_DB" \
+        --no-owner \
+        --no-privileges \
+        --exit-on-error \
+        "$BACKUP_ARCHIVE"
+    RESTORE_STATUS=$?
+    set -e
 fi
+
+if [ "$RESTORE_STATUS" -ne 0 ]; then
+    echo "[CRITICAL ERROR] Restoration pipeline failed with exit code: $RESTORE_STATUS!" >&2
+    echo "Preserving disposable database '$VERIFY_DB' for forensic error inspection." >&2
+    exit "$RESTORE_STATUS"
+fi
+
 echo "[SUCCESS] Archive restored cleanly into verification database: $VERIFY_DB"
 ```
 
 #### Step 4: Verify Schema, Object Counts & Relational Integrity
-Run non-destructive integrity queries against the verification database:
-
 ```bash
-# 1. Inspect table counts in core models
-psql -U postgres -d "$VERIFY_DB" -c "
-SELECT 'User' AS model, COUNT(*) FROM \"User\"
+# 1. Inspect table counts across essential models
+psql -U postgres -d "$VERIFY_DB" -v ON_ERROR_STOP=1 -c "
+SELECT 'User' AS model, COUNT(*) AS count FROM \"User\"
 UNION ALL
-SELECT 'Role' AS model, COUNT(*) FROM \"Role\"
+SELECT 'Role' AS model, COUNT(*) AS count FROM \"Role\"
 UNION ALL
-SELECT 'Task' AS model, COUNT(*) FROM \"Task\"
+SELECT 'Task' AS model, COUNT(*) AS count FROM \"Task\"
 UNION ALL
-SELECT 'Department' AS model, COUNT(*) FROM \"Department\";
+SELECT 'Department' AS model, COUNT(*) AS count FROM \"Department\"
+UNION ALL
+SELECT '_prisma_migrations' AS model, COUNT(*) AS count FROM \"_prisma_migrations\";
 "
 
-# 2. Inspect latest Prisma migration record
-psql -U postgres -d "$VERIFY_DB" -c "
+# 2. Inspect latest Prisma migration records
+psql -U postgres -d "$VERIFY_DB" -v ON_ERROR_STOP=1 -c "
 SELECT id, migration_name, finished_at, rolled_back_at
 FROM \"_prisma_migrations\"
 ORDER BY finished_at DESC LIMIT 5;
 "
+
+# 3. Automated assertions: fail closed if essential tables are empty
+RECORD_COUNT_USER=$(psql -U postgres -d "$VERIFY_DB" -t -A -c "SELECT COUNT(*) FROM \"User\";")
+RECORD_COUNT_ROLE=$(psql -U postgres -d "$VERIFY_DB" -t -A -c "SELECT COUNT(*) FROM \"Role\";")
+RECORD_COUNT_MIGRATIONS=$(psql -U postgres -d "$VERIFY_DB" -t -A -c "SELECT COUNT(*) FROM \"_prisma_migrations\";")
+
+if [ "$RECORD_COUNT_USER" -eq 0 ] || [ "$RECORD_COUNT_ROLE" -eq 0 ] || [ "$RECORD_COUNT_MIGRATIONS" -eq 0 ]; then
+    echo "[CRITICAL ERROR] Automated data verification failed: Essential tables are empty!" >&2
+    echo "User count: $RECORD_COUNT_USER, Role count: $RECORD_COUNT_ROLE, Migrations count: $RECORD_COUNT_MIGRATIONS" >&2
+    exit 1
+fi
+echo "[SUCCESS] Automated data assertions passed: Essential tables and migration records verified."
 ```
 
-#### Step 5: Clean Up Verification Database
-Once data integrity is validated, safely destroy the temporary scratch database using positive safety validation:
+> [!NOTE]
+> **Data Assertion Scope & Limitations:**
+> Non-zero record counts in `User`, `Role`, and `_prisma_migrations` verify that schema creation and data loading completed.
+> However, row counts alone **do not prove full application correctness**.
+> They do not verify password hash validity, foreign key relationship integrity under complex application queries, JWT decryption against current environment secrets, or business transaction execution. Full application validation occurs in Stage 3.
 
+#### Step 5: Clean Up Disposable Scratch Database
 ```bash
-# Positive safety assertion: verify database name matches verification naming pattern
-if [[ -n "${VERIFY_DB:-}" && "$VERIFY_DB" =~ ^cmd_restore_verification_[0-9]{8}_[0-9]{6}$ ]]; then
+# Strict fail-closed deletion guard: target must strictly match scratch prefix
+if [[ -n "${VERIFY_DB:-}" && "$VERIFY_DB" =~ ^cmd_restore_verification_[0-9]{8}_[0-9]{6}_[0-9]+$ ]]; then
     dropdb -U postgres "$VERIFY_DB"
-    echo "Removed verification database: $VERIFY_DB"
+    echo "Safely removed verification scratch database: $VERIFY_DB"
 else
-    echo "[CRITICAL ERROR] Target database '$VERIFY_DB' does not match safe verification prefix. Aborting drop to protect databases."
+    echo "[CRITICAL ERROR] Target database '$VERIFY_DB' does not match safe verification prefix! Aborting drop to protect databases." >&2
     exit 1
 fi
 ```
+
+> [!IMPORTANT]
+> **Failure Behavior & Scratch Database Retention:**
+> If restoration (Step 3) or data verification (Step 4) encounters an error, the script exits immediately with a non-zero exit code **without reaching Step 5**.
+> The scratch database (`cmd_restore_verification_*`) is intentionally **preserved** in its failed state to enable forensic investigation of PostgreSQL error logs, table contents, and constraint violations.
+> Once troubleshooting is complete, operators can manually remove the failed scratch database after verifying its name:
+> ```bash
+> # Verify exact scratch name before dropping
+> if [[ "$FAILED_DB" =~ ^cmd_restore_verification_[0-9]{8}_[0-9]{6}_[0-9]+$ ]]; then
+>     dropdb -U postgres "$FAILED_DB"
+> fi
+> ```
 
 ---
 
 ### Procedure B: Controlled Production Disaster Recovery (Catastrophic Loss Only)
 
-> [!WARNING]
-> **Manual Operational Protocol — Untested Procedure:**
-> This procedure is reserved strictly for complete data recovery scenarios (e.g. storage volume reconstruction, corrupted cluster rebuild).
-> This procedure is a documented operational protocol and has **not** been executed or rehearsed against live production databases.
-> It requires:
-> 1. An explicitly authorized human operator and approved maintenance window.
-> 2. A verified backup archive whose completion marker and gzip integrity have been confirmed.
-> 3. An independent operational decision confirming that current production data cannot be recovered without a restore.
+> [!CRITICAL]
+> **DISASTER RECOVERY ONLY — NEVER EXECUTE DURING ROUTINE DEPLOYMENT:**
+> This procedure is reserved strictly for complete data loss recovery scenarios (e.g. storage volume reconstruction, unrecoverable disk failure, corrupted database cluster rebuild).
+> It permanently modifies production state, halts application ingress, severs database connections, and renames the active database.
+> **Destructive Commands Warning:** Commands such as `pm2 stop`, `ALTER DATABASE cmd_office RENAME`, `createdb cmd_office`, and `pg_restore ... cmd_office` must **NEVER** be executed during a routine patch or zero-downtime deployment.
+> Routine deployments use strictly `scripts/deploy-production.sh` with `pm2 reload`.
+>
+> **Prerequisites for Disaster Recovery Execution:**
+> 1. An explicitly authorized human operator and approved emergency maintenance window.
+> 2. An explicitly specified, non-empty backup archive whose container integrity has been fully verified *prior* to taking any disruptive action.
+> 3. An independent operational decision confirming that current production data cannot be recovered without a full restore.
 > 4. Full application downtime.
+> 5. Operational Note: This procedure is a documented operational protocol and has **not** been executed against live production.
 
-1. **Halt Application Ingress:**
+1. **Locate & Pre-Validate Candidate Archive BEFORE Service Interruption (Preflight Gate):**
+   *Never halt application services or touch the database before confirming that the target archive is fully readable and structurally intact.*
+   ```bash
+   set -euo pipefail
+
+   # Mandatory explicit archive selection: do not rely on implicit or ambiguous defaults
+   BACKUP_ARCHIVE="${1:-${BACKUP_ARCHIVE:-}}"
+   if [ -z "$BACKUP_ARCHIVE" ]; then
+       echo "[CRITICAL ERROR] Disaster recovery requires an explicit backup archive path!" >&2
+       echo "  Usage: ./restore-disaster-recovery.sh /path/to/archive.dump (or .sql.gz)" >&2
+       echo "  Example baseline: /var/backups/cmd-dashboard/cmd_office_predeploy_20261030_110915.dump" >&2
+       exit 1
+   fi
+
+   if [ ! -f "$BACKUP_ARCHIVE" ] || [ ! -s "$BACKUP_ARCHIVE" ]; then
+       echo "[CRITICAL ERROR] Disaster recovery candidate '$BACKUP_ARCHIVE' is missing or 0 bytes!" >&2
+       exit 1
+   fi
+
+   echo "==> Pre-Flight: Validating Archive Container Integrity Prior to Outage..."
+   MAGIC_HEADER=$(head -c 5 "$BACKUP_ARCHIVE" 2>/dev/null || echo "")
+
+   if [[ "$MAGIC_HEADER" == "PGDMP"* ]]; then
+       ARCHIVE_FORMAT="PG_CUSTOM_DUMP"
+       echo "  [FORMAT] Detected PostgreSQL Custom Format Archive (.dump)."
+       if ! pg_restore -l "$BACKUP_ARCHIVE" > /dev/null 2>&1; then
+           echo "[CRITICAL ERROR] Pre-flight failed: Invalid or corrupted Table of Contents in '$BACKUP_ARCHIVE'!" >&2
+           echo "Refusing to disrupt production services for a corrupt archive." >&2
+           exit 1
+       fi
+       echo "  [OK] Custom dump Table of Contents verified readable."
+
+   elif gzip -t "$BACKUP_ARCHIVE" 2>/dev/null; then
+       ARCHIVE_FORMAT="GZIP_SQL"
+       echo "  [FORMAT] Detected Gzip Plain-Text SQL Archive (.sql.gz)."
+       if ! gzip -dc "$BACKUP_ARCHIVE" | tail -n 25 | grep -q "PostgreSQL database dump complete"; then
+           echo "[CRITICAL ERROR] Pre-flight failed: Missing PostgreSQL completion marker in '$BACKUP_ARCHIVE'!" >&2
+           echo "Refusing to disrupt production services for a truncated archive." >&2
+           exit 1
+       fi
+       echo "  [OK] Gzip CRC integrity and PostgreSQL completion marker verified."
+
+   else
+       echo "[CRITICAL ERROR] Unrecognized or unsupported archive format in '$BACKUP_ARCHIVE'!" >&2
+       echo "Refusing to disrupt production services for an unknown archive." >&2
+       exit 1
+   fi
+   echo "  [SUCCESS] Pre-flight validation passed. Candidate archive is intact."
+   ```
+
+2. **Halt Application Ingress (Disaster Recovery Only):**
    ```bash
    cd /var/www/cmd-dashboard
    pm2 stop ecosystem.config.js
    ```
 
-2. **Capture Emergency Safety Snapshot of Current Database State:**
+3. **Capture Emergency Safety Snapshot of Current Database State:**
    Even if the database is in an inconsistent state, always take an emergency pre-recovery snapshot before proceeding:
    ```bash
    pg_dump -U postgres cmd_office | gzip > "/var/backups/cmd-dashboard/emergency-pre-restore-$(date +%Y%m%d-%H%M%S).sql.gz" || true
    ```
 
-3. **Terminate Active Database Connections:**
+4. **Terminate Active Database Connections (Disaster Recovery Only):**
    ```bash
    psql -U postgres -c "
    SELECT pg_terminate_backend(pid)
@@ -282,7 +566,7 @@ fi
    "
    ```
 
-4. **Isolate Compromised Database & Initialize Clean Target:**
+5. **Isolate Compromised Database & Initialize Clean Target (Disaster Recovery Only):**
    ```bash
    # Rename existing database rather than dropping to preserve forensic copy
    psql -U postgres -c "ALTER DATABASE cmd_office RENAME TO cmd_office_corrupted_$(date +%Y%m%d_%H%M%S);"
@@ -291,14 +575,28 @@ fi
    createdb -U postgres -O postgres cmd_office
    ```
 
-5. **Execute Stream Restoration with Strict Pipeline Guard:**
+6. **Execute Restoration with Format-Appropriate Tooling (Disaster Recovery Only):**
    ```bash
-   set -o pipefail
-   gzip -dc "$SQL_GZ" | psql -U postgres -d cmd_office -v ON_ERROR_STOP=1
+   set -euo pipefail
+
+   if [ "$ARCHIVE_FORMAT" = "PG_CUSTOM_DUMP" ]; then
+       echo "Restoring PostgreSQL custom format archive (.dump) via pg_restore..."
+       pg_restore -U postgres \
+           --dbname=cmd_office \
+           --no-owner \
+           --no-privileges \
+           --exit-on-error \
+           "$BACKUP_ARCHIVE"
+   elif [ "$ARCHIVE_FORMAT" = "GZIP_SQL" ]; then
+       echo "Restoring plain-text SQL archive (.sql.gz) via psql..."
+       set -o pipefail
+       gzip -dc "$BACKUP_ARCHIVE" | psql -U postgres -d cmd_office -v ON_ERROR_STOP=1
+   fi
+   echo "[SUCCESS] Archive data restored into fresh cmd_office database."
    ```
 
-6. **Re-Apply Database Role Ownership & Schema Grants:**
-   Because `psql` restores tables under the executing user (`postgres`), ensure the application runtime user (e.g. `cmd_user` configured in `DATABASE_URL`) has requisite privileges:
+7. **Re-Apply Database Role Ownership & Schema Grants (Disaster Recovery Only):**
+   Because `psql` and `pg_restore` restore tables under the executing superuser (`postgres`), ensure the application runtime user (e.g. `cmd_user` configured in `DATABASE_URL`) has requisite privileges:
    ```bash
    APP_DB_USER="cmd_user" # Verify from backend/.env DATABASE_URL
    psql -U postgres -d cmd_office -c "
@@ -310,7 +608,7 @@ fi
    "
    ```
 
-7. **Verify Application Health & Restart Services:**
+8. **Verify Application Health & Restart Services (Disaster Recovery Only):**
    ```bash
    pm2 start ecosystem.config.js
    pm2 status
@@ -329,7 +627,7 @@ fi
 > The destination database identity must be positively asserted prior to executing any destructive command (`DROP DATABASE`, `CREATE DATABASE`, or SQL restore stream).
 
 #### Staging Database Restoration Pipeline:
-The following automated restoration runbook enforces POSIX pipeline failure handling, physical archive verification, strict target assertion, and comprehensive schema verification.
+The following automated restoration runbook enforces POSIX pipeline failure handling, physical archive verification, strict target assertion, operator confirmation, and comprehensive schema verification.
 
 > [!NOTE]
 > **Operational Directive:** This documentation provides the canonical runbook. **Do not execute any restore command** without explicit operational authorization and maintenance scheduling.
@@ -339,6 +637,7 @@ The following automated restoration runbook enforces POSIX pipeline failure hand
 # ------------------------------------------------------------------------------
 # Canonical Staging Database Restoration Script
 # Target: Approved Staging Database ONLY (cmd_office_staging)
+# Supports: .sql.gz (Plain SQL Gzip) and .dump (PostgreSQL Custom Format)
 # ------------------------------------------------------------------------------
 set -euo pipefail
 
@@ -363,17 +662,50 @@ fi
 
 echo "  [VERIFIED] Approved staging destination target: $STAGING_DB_TARGET"
 
-# 2. Locate backup archive and verify existence and non-empty status
-BACKUP_ARCHIVE="${1:-}"
-if [ -z "$BACKUP_ARCHIVE" ]; then
-    # Default to latest verified backup archive if not passed as argument
-    BACKUP_DIR="/var/backups/cmd-dashboard"
-    LATEST_DIR=$(ls -td "$BACKUP_DIR"/backup-* 2>/dev/null | head -n 1)
-    if [ -z "$LATEST_DIR" ]; then
-        echo "[CRITICAL ERROR] No backup directory located under '$BACKUP_DIR'!" >&2
+# Operator confirmation gate: require explicit confirmation before dropping existing staging data
+if [ "${CONFIRM_DISCARD_STAGING_DATA:-false}" != "true" ]; then
+    echo "------------------------------------------------------------------------"
+    echo "  [STAGING DESTRUCTION WARNING] Existing staging database will be dropped."
+    echo "  Target: '$STAGING_DB_TARGET'"
+    echo "  All active connections will be severed and all existing staging tables"
+    echo "  and data will be permanently destroyed."
+    echo "------------------------------------------------------------------------"
+    read -r -p "Type '$STAGING_DB_TARGET' to confirm destruction and continue: " CONFIRM_NAME
+    if [ "$CONFIRM_NAME" != "$STAGING_DB_TARGET" ]; then
+        echo "[CRITICAL ERROR] Operator confirmation mismatch ('$CONFIRM_NAME' != '$STAGING_DB_TARGET'). Aborting!" >&2
         exit 1
     fi
-    BACKUP_ARCHIVE="$LATEST_DIR/$(basename "$LATEST_DIR" | sed 's/backup-/db-backup-/').sql.gz"
+fi
+
+# 2. Locate backup archive and verify existence and non-empty status
+# Explicit archive selection: when restoring a specific baseline—such as:
+#   /var/backups/cmd-dashboard/cmd_office_predeploy_20261030_110915.dump
+# always supply the exact file path as argument ($1).
+BACKUP_ARCHIVE="${1:-${BACKUP_ARCHIVE:-}}"
+
+if [ -z "$BACKUP_ARCHIVE" ]; then
+    BACKUP_DIR="${BACKUP_DIR:-/var/backups/cmd-dashboard}"
+    # Check for known historical baseline archive first
+    if [ -f "$BACKUP_DIR/cmd_office_predeploy_20261030_110915.dump" ]; then
+        BACKUP_ARCHIVE="$BACKUP_DIR/cmd_office_predeploy_20261030_110915.dump"
+        echo "  [DISCOVERY] Selected known baseline archive: $BACKUP_ARCHIVE"
+    else
+        LATEST_DIR=$(ls -td "$BACKUP_DIR"/backup-* 2>/dev/null | head -n 1)
+        if [ -n "$LATEST_DIR" ]; then
+            if [ -f "$LATEST_DIR/$(basename "$LATEST_DIR" | sed 's/backup-/db-backup-/').sql.gz" ]; then
+                BACKUP_ARCHIVE="$LATEST_DIR/$(basename "$LATEST_DIR" | sed 's/backup-/db-backup-/').sql.gz"
+            elif [ -f "$LATEST_DIR/$(basename "$LATEST_DIR" | sed 's/backup-/db-backup-/').dump" ]; then
+                BACKUP_ARCHIVE="$LATEST_DIR/$(basename "$LATEST_DIR" | sed 's/backup-/db-backup-/').dump"
+            fi
+        fi
+    fi
+fi
+
+if [ -z "$BACKUP_ARCHIVE" ]; then
+    echo "[CRITICAL ERROR] No backup archive located under '$BACKUP_DIR'!" >&2
+    echo "Archive discovery is ambiguous. An explicit path must be provided:" >&2
+    echo "  Usage: ./restore-staging.sh /var/backups/cmd-dashboard/cmd_office_predeploy_20261030_110915.dump" >&2
+    exit 1
 fi
 
 echo "==> Step 2: Verifying Backup File Existence & Non-Empty Check..."
@@ -382,7 +714,6 @@ if [ ! -f "$BACKUP_ARCHIVE" ]; then
     exit 1
 fi
 
-# Verify backup file is non-empty (greater than zero bytes)
 if [ ! -s "$BACKUP_ARCHIVE" ]; then
     echo "[CRITICAL ERROR] Backup file '$BACKUP_ARCHIVE' is empty (0 bytes)!" >&2
     exit 1
@@ -391,35 +722,43 @@ fi
 FILE_SIZE_BYTES=$(wc -c < "$BACKUP_ARCHIVE" | tr -d ' ')
 echo "  [VERIFIED] Backup file exists: $BACKUP_ARCHIVE ($FILE_SIZE_BYTES bytes)"
 
-# 3. Verify gzip archive integrity
-echo "==> Step 3: Verifying Archive Gzip Integrity..."
-if ! gzip -t "$BACKUP_ARCHIVE"; then
-    echo "[CRITICAL ERROR] Archive gzip CRC-32 integrity check failed for '$BACKUP_ARCHIVE'!" >&2
-    echo "The archive is corrupted or truncated. Aborting restoration." >&2
+# 3. Detect Format and Verify Container Integrity
+echo "==> Step 3: Detecting Archive Format & Verifying Container Integrity..."
+MAGIC_HEADER=$(head -c 5 "$BACKUP_ARCHIVE" 2>/dev/null || echo "")
+
+if [[ "$MAGIC_HEADER" == "PGDMP"* ]]; then
+    ARCHIVE_FORMAT="PG_CUSTOM_DUMP"
+    echo "  [FORMAT] Detected PostgreSQL Custom Format Archive (.dump)."
+    if ! pg_restore -l "$BACKUP_ARCHIVE" > /dev/null 2>&1; then
+        echo "[CRITICAL ERROR] Archive Table of Contents validation failed for '$BACKUP_ARCHIVE'!" >&2
+        exit 1
+    fi
+    echo "  [VERIFIED] Custom archive Table of Contents is structurally intact."
+
+elif gzip -t "$BACKUP_ARCHIVE" 2>/dev/null; then
+    ARCHIVE_FORMAT="GZIP_SQL"
+    echo "  [FORMAT] Detected Gzip Plain-Text SQL Archive (.sql.gz)."
+    echo "  [VERIFIED] Archive gzip decompression integrity valid."
+
+    echo "==> Step 4: Inspecting PostgreSQL Dump Completion Marker..."
+    if ! gzip -dc "$BACKUP_ARCHIVE" | tail -n 25 | grep -q "PostgreSQL database dump complete"; then
+        echo "[CRITICAL ERROR] Archive is missing PostgreSQL dump completion marker!" >&2
+        echo "The backup file may have been terminated prematurely during pg_dump." >&2
+        exit 1
+    fi
+    echo "  [VERIFIED] PostgreSQL dump completion marker present."
+
+else
+    echo "[CRITICAL ERROR] Unrecognized or corrupt archive format for '$BACKUP_ARCHIVE'!" >&2
     exit 1
 fi
-echo "  [VERIFIED] Archive gzip decompression integrity valid."
 
 # ------------------------------------------------------------------------------
 # ARCHIVE VERIFICATION BOUNDARY NOTICE:
-# A successful 'gzip -t' check verifies ONLY that the compressed archive blocks
-# are physically uncorrupted and that the CRC-32 checksum matches.
-# A passing gzip check does NOT establish that:
-#   1. The SQL dump is syntactically valid or completed cleanly.
-#   2. The SQL statements match the target Prisma schema migrations.
-#   3. Target tables and foreign key constraints can be restored without errors.
-# Database restoration success is established ONLY when 'psql -v ON_ERROR_STOP=1'
-# terminates with exit code 0 and post-restore data assertions confirm record counts.
+# A successful container check verifies ONLY physical integrity and TOC readability.
+# It does NOT prove SQL syntax validity against the running server, schema compatibility,
+# foreign key consistency, or successful application startup.
 # ------------------------------------------------------------------------------
-
-# 4. Verify PostgreSQL dump completion marker
-echo "==> Step 4: Inspecting PostgreSQL Dump Completion Marker..."
-if ! gzip -dc "$BACKUP_ARCHIVE" | tail -n 25 | grep -q "PostgreSQL database dump complete"; then
-    echo "[CRITICAL ERROR] Archive is missing PostgreSQL dump completion marker!" >&2
-    echo "The backup file may have been terminated prematurely during pg_dump." >&2
-    exit 1
-fi
-echo "  [VERIFIED] PostgreSQL dump completion marker present."
 
 # 5. Initialize clean staging destination database
 echo "==> Step 5: Initializing Clean Staging Database: $STAGING_DB_TARGET..."
@@ -435,11 +774,23 @@ psql -U postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"$STAGING_DB_TA
 # Create clean staging database
 psql -U postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$STAGING_DB_TARGET\" WITH OWNER postgres ENCODING 'UTF8';"
 
-# 6. Execute stream restoration with ON_ERROR_STOP=1 and capture exit code
-echo "==> Step 6: Executing Restoration Pipeline (gzip -dc | psql)..."
+# 6. Execute format-appropriate restoration pipeline
+echo "==> Step 6: Executing Restoration Pipeline..."
+RESTORE_STATUS=0
 set +e
-gzip -dc "$BACKUP_ARCHIVE" | psql -U postgres -d "$STAGING_DB_TARGET" -v ON_ERROR_STOP=1
-RESTORE_STATUS=$?
+
+if [ "$ARCHIVE_FORMAT" = "GZIP_SQL" ]; then
+    gzip -dc "$BACKUP_ARCHIVE" | psql -U postgres -d "$STAGING_DB_TARGET" -v ON_ERROR_STOP=1
+    RESTORE_STATUS=$?
+elif [ "$ARCHIVE_FORMAT" = "PG_CUSTOM_DUMP" ]; then
+    pg_restore -U postgres \
+        --dbname="$STAGING_DB_TARGET" \
+        --no-owner \
+        --no-privileges \
+        --exit-on-error \
+        "$BACKUP_ARCHIVE"
+    RESTORE_STATUS=$?
+fi
 set -e
 
 if [ "$RESTORE_STATUS" -ne 0 ]; then
@@ -447,7 +798,7 @@ if [ "$RESTORE_STATUS" -ne 0 ]; then
     echo "Destructive changes or partial restoration state detected. Do not proceed with deployment." >&2
     exit "$RESTORE_STATUS"
 fi
-echo "  [SUCCESS] SQL restoration completed with exit status: 0."
+echo "  [SUCCESS] Database restoration completed with exit status: 0."
 
 # 7. Grant staging application database user permissions
 echo "==> Step 7: Configuring Staging Database Privileges..."
@@ -492,6 +843,16 @@ echo "Target: $STAGING_DB_TARGET (Users: $RECORD_COUNT_USER, Roles: $RECORD_COUN
 echo "Next Step: Execute Staging Data Sanitization Protocol before opening staging access."
 echo "======================================================================"
 ```
+
+> [!WARNING]
+> **Partial-Restore State & Safe Recovery Runbook:**
+> If `psql` or `pg_restore` encounters an error mid-stream, the script exits immediately with exit code `$RESTORE_STATUS`.
+> In this scenario, the staging database `$STAGING_DB_TARGET` is left in an **inconsistent, partial restoration state**.
+> **Safe Recovery Procedure:**
+> 1. **Do not run applications or migrations:** The database catalog may have partial tables and missing foreign key constraints.
+> 2. **Inspect logs:** Check terminal stderr output and PostgreSQL server logs (`/var/log/postgresql/`) to identify the exact failing SQL statement or object.
+> 3. **Resolve root cause:** Verify that PostgreSQL version compatibility, required extensions, or role privileges match the archive requirements.
+> 4. **Clean re-run:** Once resolved, re-run Procedure C from Step 1. Step 5 will cleanly drop the partial staging database (`DROP DATABASE IF EXISTS`) and re-initialize it from scratch.
 
 ---
 

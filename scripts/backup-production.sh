@@ -132,6 +132,13 @@ tar --exclude='./node_modules' \
     --exclude='./.git' \
     --exclude='./backups' \
     --exclude='./*.log' \
+    --exclude='./.env*' \
+    --exclude='./backend/.env*' \
+    --exclude='./frontend/.env*' \
+    --exclude='./*.key' \
+    --exclude='./*.pem' \
+    --exclude='./*.crt' \
+    --exclude='./uploads' \
     -czf "$APP_BACKUP_FILE" .
 
 if [ -s "$APP_BACKUP_FILE" ]; then
@@ -143,36 +150,46 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 3. CONSERVATIVE RETENTION CLEANUP
+# 3. CONSERVATIVE RETENTION CLEANUP (DISABLED BY DEFAULT)
 # ------------------------------------------------------------------------------
-# Keep at least MIN_KEEP_BACKUPS (default: 5) and never remove the only usable backup
+# Destructive pruning is disabled by default to protect existing production backups.
+# Enable explicitly only by setting ENABLE_BACKUP_PRUNING=true in environment.
 MIN_KEEP_BACKUPS=5
 mapfile -t ALL_BACKUPS < <(find "$BACKUP_BASE" -maxdepth 1 -type d -name "backup-*" 2>/dev/null | sort)
 TOTAL_BACKUPS="${#ALL_BACKUPS[@]}"
 
-if [ "$TOTAL_BACKUPS" -gt "$MIN_KEEP_BACKUPS" ]; then
-    MAX_PRUNE=$(( TOTAL_BACKUPS - MIN_KEEP_BACKUPS ))
-    mapfile -t OLD_BACKUPS < <(find "$BACKUP_BASE" -maxdepth 1 -type d -name "backup-*" -mtime +14 2>/dev/null | sort)
-    PRUNED_COUNT=0
-    for old_dir in "${OLD_BACKUPS[@]}"; do
-        if [ -z "$old_dir" ] || [ "$PRUNED_COUNT" -ge "$MAX_PRUNE" ]; then
-            break
-        fi
-        if [ -d "$old_dir" ] && [[ "$old_dir" == "$BACKUP_BASE"/backup-* ]]; then
-            echo "  [PRUNING] Removing aged backup archive: $old_dir"
-            rm -rf "$old_dir"
-            PRUNED_COUNT=$(( PRUNED_COUNT + 1 ))
-        fi
-    done
+if [ "${ENABLE_BACKUP_PRUNING:-false}" = "true" ]; then
+    if [ "$TOTAL_BACKUPS" -gt "$MIN_KEEP_BACKUPS" ]; then
+        MAX_PRUNE=$(( TOTAL_BACKUPS - MIN_KEEP_BACKUPS ))
+        mapfile -t OLD_BACKUPS < <(find "$BACKUP_BASE" -maxdepth 1 -type d -name "backup-*" -mtime +14 2>/dev/null | sort)
+        PRUNED_COUNT=0
+        for old_dir in "${OLD_BACKUPS[@]}"; do
+            if [ -z "$old_dir" ] || [ "$PRUNED_COUNT" -ge "$MAX_PRUNE" ]; then
+                break
+            fi
+            if [ -d "$old_dir" ] && [[ "$old_dir" == "$BACKUP_BASE"/backup-* ]]; then
+                echo "  [PRUNING] Removing aged backup archive: $old_dir"
+                rm -rf "$old_dir"
+                PRUNED_COUNT=$(( PRUNED_COUNT + 1 ))
+            fi
+        done
+    else
+        echo "  [RETENTION] $TOTAL_BACKUPS backup(s) on disk. Within minimum retention threshold ($MIN_KEEP_BACKUPS). Skipping pruning."
+    fi
 else
-    echo "  [RETENTION] $TOTAL_BACKUPS backup(s) on disk. Within minimum retention threshold ($MIN_KEEP_BACKUPS). Skipping pruning."
+    echo "  [RETENTION] Automated backup pruning is disabled by default (ENABLE_BACKUP_PRUNING=false)."
+    echo "  All existing backup archives preserved: $TOTAL_BACKUPS snapshot(s) present in $BACKUP_BASE."
 fi
 
 BACKUP_SUCCESS=1
 
 echo "======================================================================"
-echo "[BACKUP COMPLETE & VERIFIED SUCCESSFULLY]"
+echo "[BACKUP COMPLETE & ARCHIVE INTEGRITY VERIFIED]"
 echo "  Backup Folder: $BACKUP_DIR"
 echo "  DB Archive:    $DB_BACKUP_FILE"
 echo "  App Archive:   $APP_BACKUP_FILE"
+echo ""
+echo "  [SAFETY NOTICE] Database archive integrity (gzip test + PostgreSQL marker) verified."
+echo "  Note: This confirms archive structural validity. A trial database restore has NOT"
+echo "  been performed against an active database to protect existing production data."
 echo "======================================================================"

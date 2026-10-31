@@ -158,6 +158,13 @@ cleanup_on_failure() {
             echo "[DEPLOYMENT INTERRUPTED BY SIGNAL: $RECEIVED_SIGNAL] (Exit code: $exit_code)"
         fi
 
+        # Safely clean up temporary candidate worktree if it was created
+        CANDIDATE_WORKTREE="${CANDIDATE_WORKTREE:-$PROJECT_DIR/.releases/candidate-worktree}"
+        if [ -d "$CANDIDATE_WORKTREE" ]; then
+            git worktree remove --force "$CANDIDATE_WORKTREE" 2>/dev/null || rm -rf "$CANDIDATE_WORKTREE"
+            git worktree prune 2>/dev/null || true
+        fi
+
         if [ "$ACTIVATION_STARTED" -eq 1 ]; then
             echo "[DEPLOYMENT FAILED AFTER ACTIVATION] (Exit code: $exit_code)"
             if [ "$IN_ROLLBACK" -eq 1 ]; then
@@ -178,26 +185,17 @@ cleanup_on_failure() {
             else
                 echo "  [CRITICAL ALERT] scripts/rollback-production.sh not found! Immediate manual recovery required."
             fi
-            rm -rf backend/dist.candidate frontend/.next.candidate backend/tsconfig.candidate.json
-            rm -f .prev-deployed-commit
+            # Remove ONLY temporary candidate artifacts; preserve recovery snapshots and metadata!
+            rm -rf backend/dist.candidate frontend/.next.candidate
             echo "========================================================================="
             release_deployment_lock
             exit "$exit_code"
         else
             echo "[DEPLOYMENT FAILED BEFORE ACTIVATION] Cleaning temporary candidate build artifacts..."
             # Remove ONLY temporary candidate artifacts created during this failed run
-            rm -rf backend/dist.candidate frontend/.next.candidate backend/tsconfig.candidate.json
+            rm -rf backend/dist.candidate frontend/.next.candidate
             rm -rf backend/dist.prev.tmp frontend/.next.prev.tmp
-            rm -rf backend/dist.prev.old frontend/.next.prev.old backend/dist.old frontend/.next.old
-            # If candidate build failed before activation, return branch to pre-merge commit non-destructively
-            if [ -n "${CURRENT_COMMIT:-}" ] && [ -n "${CURRENT_BRANCH:-}" ] && [ "$(git rev-parse HEAD 2>/dev/null)" != "$CURRENT_COMMIT" ]; then
-                echo "  Candidate build not activated. Returning branch $CURRENT_BRANCH non-destructively to: $CURRENT_COMMIT"
-                git checkout -B "$CURRENT_BRANCH" "$CURRENT_COMMIT" 2>/dev/null || {
-                    echo "  [SAFETY NOTICE] Non-destructive checkout prevented overwriting working tree files."
-                    echo "  Local files preserved. Current Git commit: $(git rev-parse HEAD 2>/dev/null)"
-                }
-            fi
-            rm -f .prev-deployed-commit
+            echo "  [GIT SAFETY] Active source checkout and branch '${CURRENT_BRANCH:-main}' were completely untouched."
             echo "========================================================================="
             release_deployment_lock
             exit "$exit_code"
@@ -325,16 +323,20 @@ fi
 echo "  Current Deployed Commit: $CURRENT_COMMIT"
 echo "  Target Release Commit:   $TARGET_COMMIT"
 
-# Detect whether version-controlled database migrations are included in this release
+# Detect whether version-controlled database migrations, schema alterations, or dependency changes are included in this release
 MIGRATION_CHANGES=$(git diff --name-only "$CURRENT_COMMIT" "$TARGET_COMMIT" | grep -E '^backend/prisma/migrations/' || true)
+SCHEMA_CHANGES=$(git diff --name-only "$CURRENT_COMMIT" "$TARGET_COMMIT" | grep -E '^backend/prisma/schema\.prisma$' || true)
+BACKEND_DEP_CHANGES=$(git diff --name-only "$CURRENT_COMMIT" "$TARGET_COMMIT" | grep -E '^backend/package(-lock)?\.json$' || true)
+FRONTEND_DEP_CHANGES=$(git diff --name-only "$CURRENT_COMMIT" "$TARGET_COMMIT" | grep -E '^frontend/package(-lock)?\.json$' || true)
 
 # ------------------------------------------------------------------------------
-# STEP 3: MIGRATION SAFETY LOCK
+# STEP 3: MIGRATION, SCHEMA & DEPENDENCY SAFETY LOCKS
 # ------------------------------------------------------------------------------
-if [ -n "$MIGRATION_CHANGES" ]; then
+if [ -n "$MIGRATION_CHANGES" ] || [ -n "$SCHEMA_CHANGES" ]; then
     echo "========================================================================="
-    echo "[CRITICAL SAFETY LOCK] Database migration files detected in release diff:"
-    echo "$MIGRATION_CHANGES"
+    echo "[CRITICAL SAFETY LOCK] Database migration files or schema modifications detected in release diff:"
+    [ -n "$MIGRATION_CHANGES" ] && echo "$MIGRATION_CHANGES"
+    [ -n "$SCHEMA_CHANGES" ] && echo "$SCHEMA_CHANGES"
     echo ""
     echo "BLOCKED: Automatic production migrations are disabled."
     echo "Reason: The production database contains existing tables but has no"
@@ -354,91 +356,133 @@ if [ -n "$MIGRATION_CHANGES" ]; then
     exit 1
 fi
 
-echo "==> Step 3: Application-only release (No database migrations). Zero database commands will be executed."
+if [ -n "$BACKEND_DEP_CHANGES" ] || [ -n "$FRONTEND_DEP_CHANGES" ]; then
+    echo "========================================================================="
+    echo "[CRITICAL SAFETY LOCK] Dependency modifications detected in release diff:"
+    [ -n "$BACKEND_DEP_CHANGES" ] && echo "$BACKEND_DEP_CHANGES"
+    [ -n "$FRONTEND_DEP_CHANGES" ] && echo "$FRONTEND_DEP_CHANGES"
+    echo ""
+    echo "BLOCKED: Automated zero-downtime deployment cannot modify shared node_modules."
+    echo "Reason: Modifying or re-installing node_modules could disrupt the active running PM2 application."
+    echo "Required procedure:"
+    echo "  Dependency changes must be deployed via planned maintenance with isolated dependency installation."
+    echo "Deployment aborted before modifying any files or build state."
+    echo "========================================================================="
+    exit 1
+fi
+
+echo "==> Step 3: Application-only release (No migrations or dependency changes). Zero database commands will be executed."
 
 # ------------------------------------------------------------------------------
-# PRE-ACTIVATION COMMIT TRACKING
+# STEP 4: ISOLATED CANDIDATE WORKTREE CREATION & BUILD ISOLATION
 # ------------------------------------------------------------------------------
-
-# Record previous commit for rollback tracking before merge
+# Active checkout ($CURRENT_BRANCH at $CURRENT_COMMIT) remains 100% UNTOUCHED!
+# No files in the active working tree are modified during candidate compilation.
 echo "$CURRENT_COMMIT" > .prev-deployed-commit
 
-# Fast-forward working tree to target commit safely
-git merge --ff-only "origin/$CURRENT_BRANCH"
+CANDIDATE_WORKTREE="$PROJECT_DIR/.releases/candidate-worktree"
+echo "==> Step 4: Creating Isolated Candidate Worktree for $TARGET_COMMIT..."
+
+# Clean up any stale worktree from previous interrupted executions
+if [ -d "$CANDIDATE_WORKTREE" ]; then
+    git worktree remove --force "$CANDIDATE_WORKTREE" 2>/dev/null || rm -rf "$CANDIDATE_WORKTREE"
+fi
+git worktree prune 2>/dev/null || true
+
+# Add isolated worktree in detached HEAD at target commit
+git worktree add --detach "$CANDIDATE_WORKTREE" "$TARGET_COMMIT"
+
+# Verify active checkout branch and working tree are completely intact
+CURRENT_ACTIVE_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || true)
+if [ "$CURRENT_ACTIVE_BRANCH" != "$CURRENT_BRANCH" ]; then
+    echo "  [CRITICAL ERROR] Active branch unexpectedly moved during worktree creation!"
+    git worktree remove --force "$CANDIDATE_WORKTREE" 2>/dev/null || rm -rf "$CANDIDATE_WORKTREE"
+    exit 1
+fi
+
+# Guard Prisma client generation: Step 3 blocks deployments with schema changes.
+# Candidate worktrees use symlinks to the existing production dependency directories.
+# The dependency lock checks for dependency-manifest changes (package.json / package-lock.json).
+# Note on write protection: Standard symlinks do not enforce operating-system-level
+# write protection. Candidate build tools could potentially write through these symlinks,
+# and this residual risk has not been eliminated by the dependency lock.
+# Because schema is unchanged, Prisma client does not require regeneration here.
+if [ ! -d "backend/node_modules/@prisma/client" ] || [ ! -d "backend/node_modules/.prisma/client" ]; then
+    echo "  [PRISMA] Prisma client missing from active backend/node_modules. Generating client before worktree link..."
+    (cd backend && npx prisma generate)
+else
+    echo "  [PRISMA] Prisma client already generated and schema is unchanged. Preserving active runtime dependencies."
+fi
+
+# Link production node_modules into isolated candidate worktree
+ln -s "$PROJECT_DIR/backend/node_modules" "$CANDIDATE_WORKTREE/backend/node_modules"
+ln -s "$PROJECT_DIR/frontend/node_modules" "$CANDIDATE_WORKTREE/frontend/node_modules"
 
 # ------------------------------------------------------------------------------
-# STEP 4: ISOLATED CANDIDATE BUILDS (Active PM2 artifacts completely untouched)
+# STEP 5: COMPILING CANDIDATE ARTIFACTS INSIDE ISOLATED WORKTREE
 # ------------------------------------------------------------------------------
-echo "==> Step 4: Compiling Backend Candidate Release (Isolated Build)..."
-
-rm -rf backend/dist.candidate backend/tsconfig.candidate.json
-cat << 'EOF' > backend/tsconfig.candidate.json
-{
-  "extends": "./tsconfig.build.json",
-  "compilerOptions": {
-    "outDir": "./dist.candidate"
-  }
-}
-EOF
-
-(cd backend && npx prisma generate && npx nest build -p tsconfig.candidate.json)
-rm -f backend/tsconfig.candidate.json
+echo "==> Step 5: Compiling Backend Candidate Release inside Isolated Worktree..."
+(cd "$CANDIDATE_WORKTREE/backend" && npx nest build)
 
 # Verify backend candidate build artifact entry point and root module exist
-if [ ! -f "backend/dist.candidate/src/main.js" ] && [ ! -f "backend/dist.candidate/main.js" ]; then
+if [ ! -f "$CANDIDATE_WORKTREE/backend/dist/src/main.js" ] && [ ! -f "$CANDIDATE_WORKTREE/backend/dist/main.js" ]; then
     echo "  [CRITICAL ERROR] Backend candidate compilation did not produce expected entry point (src/main.js)!"
-    rm -rf backend/dist.candidate
+    git worktree remove --force "$CANDIDATE_WORKTREE" 2>/dev/null || rm -rf "$CANDIDATE_WORKTREE"
     exit 1
 fi
 
-if [ ! -f "backend/dist.candidate/src/app.module.js" ]; then
+if [ ! -f "$CANDIDATE_WORKTREE/backend/dist/src/app.module.js" ]; then
     echo "  [CRITICAL ERROR] Backend candidate compilation did not produce root module (src/app.module.js)!"
-    rm -rf backend/dist.candidate
+    git worktree remove --force "$CANDIDATE_WORKTREE" 2>/dev/null || rm -rf "$CANDIDATE_WORKTREE"
     exit 1
 fi
-echo "  [SUCCESS] Backend candidate release compiled and verified in dist.candidate."
+echo "  [SUCCESS] Backend candidate release compiled and verified in worktree dist."
 
-echo "==> Step 5: Compiling Frontend Candidate Release (Isolated Build)..."
-rm -rf frontend/.next.candidate
-(cd frontend && NEXT_DIST_DIR=.next.candidate npm run build)
+echo "==> Step 6: Compiling Frontend Candidate Release inside Isolated Worktree..."
+(cd "$CANDIDATE_WORKTREE/frontend" && npm run build)
 
 # Verify frontend candidate build artifact manifest, server bundle, and static assets exist
-if [ ! -f "frontend/.next.candidate/BUILD_ID" ]; then
+if [ ! -f "$CANDIDATE_WORKTREE/frontend/.next/BUILD_ID" ]; then
     echo "  [CRITICAL ERROR] Frontend candidate compilation did not produce valid BUILD_ID!"
-    rm -rf frontend/.next.candidate
+    git worktree remove --force "$CANDIDATE_WORKTREE" 2>/dev/null || rm -rf "$CANDIDATE_WORKTREE"
     exit 1
 fi
-CANDIDATE_BUILD_ID=$(cat "frontend/.next.candidate/BUILD_ID" 2>/dev/null || echo "")
+CANDIDATE_BUILD_ID=$(cat "$CANDIDATE_WORKTREE/frontend/.next/BUILD_ID" 2>/dev/null || echo "")
 
-if [ ! -d "frontend/.next.candidate/server" ] || [ ! -d "frontend/.next.candidate/static" ]; then
+if [ ! -d "$CANDIDATE_WORKTREE/frontend/.next/server" ] || [ ! -d "$CANDIDATE_WORKTREE/frontend/.next/static" ]; then
     echo "  [CRITICAL ERROR] Frontend candidate compilation is missing server or static assets!"
-    rm -rf frontend/.next.candidate
+    git worktree remove --force "$CANDIDATE_WORKTREE" 2>/dev/null || rm -rf "$CANDIDATE_WORKTREE"
     exit 1
 fi
-echo "  [SUCCESS] Frontend candidate release compiled and verified in .next.candidate (BUILD_ID: ${CANDIDATE_BUILD_ID:-unknown})."
+echo "  [SUCCESS] Frontend candidate release compiled and verified in worktree .next (BUILD_ID: ${CANDIDATE_BUILD_ID:-unknown})."
+
+# Extract verified candidate artifacts into candidate staging directories
+rm -rf backend/dist.candidate frontend/.next.candidate
+cp -r "$CANDIDATE_WORKTREE/backend/dist" backend/dist.candidate
+cp -r "$CANDIDATE_WORKTREE/frontend/.next" frontend/.next.candidate
+
+# Clean up isolated candidate worktree safely now that compilation and extraction succeeded
+git worktree remove --force "$CANDIDATE_WORKTREE" 2>/dev/null || rm -rf "$CANDIDATE_WORKTREE"
+git worktree prune 2>/dev/null || true
 
 # ------------------------------------------------------------------------------
-# STEP 6: ATOMIC SNAPSHOT & ACTIVATION
+# STEP 7: PRE-ACTIVATION SNAPSHOT & SEQUENTIAL ACTIVATION
 # ------------------------------------------------------------------------------
-echo "==> Step 6: Atomically Activating Verified Candidate Artifacts..."
+echo "==> Step 7: Sequentially Activating Verified Candidate Artifacts..."
 
 # 1. Snapshot current active artifacts safely to .prev
 if [ -d "backend/dist" ]; then
     rm -rf "backend/dist.prev.tmp"
     cp -r "backend/dist" "backend/dist.prev.tmp"
-    rm -rf "backend/dist.prev.old"
     [ -d "backend/dist.prev" ] && mv "backend/dist.prev" "backend/dist.prev.old"
     mv "backend/dist.prev.tmp" "backend/dist.prev"
-    rm -rf "backend/dist.prev.old"
 fi
 
 if [ -d "frontend/.next" ]; then
     rm -rf "frontend/.next.prev.tmp"
     cp -r "frontend/.next" "frontend/.next.prev.tmp"
-    rm -rf "frontend/.next.prev.old"
     [ -d "frontend/.next.prev" ] && mv "frontend/.next.prev" "frontend/.next.prev.old"
     mv "frontend/.next.prev.tmp" "frontend/.next.prev"
-    rm -rf "frontend/.next.prev.old"
 fi
 
 # 2. Record release metadata before activation
@@ -452,31 +496,36 @@ cat << EOF > .releases/previous-release.json
 }
 EOF
 
-# 3. Atomically activate candidate artifacts into production paths
+# 3. Sequentially activate candidate artifacts into production paths
 # Verify both candidate build directories exist immediately prior to activation
 if [ ! -d "backend/dist.candidate" ] || [ ! -d "frontend/.next.candidate" ]; then
     echo "  [CRITICAL ERROR] Candidate build directories (backend/dist.candidate or frontend/.next.candidate) are missing immediately prior to activation!"
     exit 1
 fi
 ACTIVATION_STARTED=1
+BACKEND_SWAPPED=0
+FRONTEND_SWAPPED=0
 
+# Move active artifacts to .old, preserving any prior .old as .old.bak so no recovery artifacts are destroyed
+[ -d "backend/dist.old" ] && mv "backend/dist.old" "backend/dist.old.bak"
 if [ -d "backend/dist" ]; then
-    rm -rf "backend/dist.old"
     mv "backend/dist" "backend/dist.old"
-    mv "backend/dist.candidate" "backend/dist"
-    rm -rf "backend/dist.old"
-else
-    mv "backend/dist.candidate" "backend/dist"
+fi
+mv "backend/dist.candidate" "backend/dist"
+BACKEND_SWAPPED=1
+
+# Safe simulation hook for testing crash/interruption between backend and frontend activations
+if [ "${SIMULATE_FAILURE_BETWEEN_ACTIVATIONS:-0}" = "1" ]; then
+    echo "  [TEST SIMULATION] Simulating crash after backend activation but before frontend activation..."
+    exit 1
 fi
 
+[ -d "frontend/.next.old" ] && mv "frontend/.next.old" "frontend/.next.old.bak"
 if [ -d "frontend/.next" ]; then
-    rm -rf "frontend/.next.old"
     mv "frontend/.next" "frontend/.next.old"
-    mv "frontend/.next.candidate" "frontend/.next"
-    rm -rf "frontend/.next.old"
-else
-    mv "frontend/.next.candidate" "frontend/.next"
 fi
+mv "frontend/.next.candidate" "frontend/.next"
+FRONTEND_SWAPPED=1
 
 echo "  [SUCCESS] Verified candidate artifacts activated in production paths."
 
@@ -501,20 +550,73 @@ fi
 echo "==> Step 8: Performing Health Verification..."
 
 # Reliable multi-tool HTTP probe helper: uses curl if available, falls back to node http
+# Enforces bounded timeouts and validates that backend settings endpoints return valid JSON (rejecting 401/403/500)
 check_http_endpoint() {
     local url="$1"
     if command -v curl &> /dev/null; then
-        curl -s -f "$url" > /dev/null 2>&1
-        return $?
+        if [[ "$url" == *"api/settings/public"* ]]; then
+            local probe_tmp="$PROJECT_DIR/.releases/probe_deploy_$$.json"
+            mkdir -p "$PROJECT_DIR/.releases"
+            local http_code
+            http_code=$(curl -s -o "$probe_tmp" -w "%{http_code}" --connect-timeout 5 --max-time 10 "$url" 2>/dev/null || echo "000")
+            if [ "$http_code" != "200" ]; then
+                rm -f "$probe_tmp"
+                return 1
+            fi
+            if command -v node &> /dev/null; then
+                if node -e '
+                    try {
+                        const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+                        if (d && typeof d === "object" && (d.app_name !== undefined || d.login_heading !== undefined)) {
+                            process.exit(0);
+                        }
+                    } catch(e) {}
+                    process.exit(1);
+                ' "$probe_tmp" >/dev/null 2>&1; then
+                    rm -f "$probe_tmp"
+                    return 0
+                else
+                    rm -f "$probe_tmp"
+                    return 1
+                fi
+            else
+                if grep -q '"app_name"' "$probe_tmp" 2>/dev/null; then
+                    rm -f "$probe_tmp"
+                    return 0
+                else
+                    rm -f "$probe_tmp"
+                    return 1
+                fi
+            fi
+        else
+            curl -s -f --connect-timeout 5 --max-time 10 "$url" > /dev/null 2>&1
+            return $?
+        fi
     elif command -v node &> /dev/null; then
         node -e '
             const http = require("http");
             const url = process.argv[1];
-            const req = http.get(url, { timeout: 3000 }, (res) => {
-                if (res.statusCode >= 200 && res.statusCode < 400) {
-                    process.exit(0);
+            const isSettings = url.includes("api/settings/public");
+            const req = http.get(url, { timeout: 5000 }, (res) => {
+                if (isSettings) {
+                    if (res.statusCode !== 200) process.exit(1);
+                    let body = "";
+                    res.on("data", c => body += c);
+                    res.on("end", () => {
+                        try {
+                            const d = JSON.parse(body);
+                            if (d && typeof d === "object" && (d.app_name !== undefined || d.login_heading !== undefined)) {
+                                process.exit(0);
+                            }
+                        } catch(e) {}
+                        process.exit(1);
+                    });
                 } else {
-                    process.exit(1);
+                    if (res.statusCode >= 200 && res.statusCode < 400) {
+                        process.exit(0);
+                    } else {
+                        process.exit(1);
+                    }
                 }
             });
             req.on("error", () => process.exit(1));
@@ -570,10 +672,19 @@ done
 
 if [ "$HEALTHY" = true ]; then
     echo "  [SUCCESS] All application services are online and healthy!"
+
+    # 1. Clean up temporary .old, .old.bak, and .prev.old recovery directories safely now that health is confirmed
+    rm -rf backend/dist.old backend/dist.old.bak frontend/.next.old frontend/.next.old.bak backend/dist.prev.old frontend/.next.prev.old
+
+    # 2. Advance local branch pointer cleanly to target commit
+    if [ -n "${CURRENT_BRANCH:-}" ]; then
+        git merge --ff-only "$TARGET_COMMIT" 2>/dev/null || true
+    fi
+
     echo "$TARGET_COMMIT" > .current-deployed-commit
     DEPLOY_SUCCESS=1
 else
-    echo "  [CRITICAL ERROR] Health check failed: Candidate release did not respond with 200 OK!"
+    echo "  [CRITICAL ERROR] Health check failed: Candidate release did not pass verification!"
     exit 1
 fi
 
