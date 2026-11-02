@@ -1066,16 +1066,40 @@ describe('Production Deployment Interruption & Disk Preflight Safeguards (script
           exit 1
         fi
         OUT_FILE=""
+        REQ_URL=""
         while [ $# -gt 0 ]; do
           if [ "$1" = "-o" ]; then
             OUT_FILE="$2"
             shift 2
+          elif [[ "$1" =~ ^https?:// ]]; then
+            REQ_URL="$1"
+            shift
           else
             shift
           fi
         done
+
         if [ -n "$OUT_FILE" ]; then
-          echo '{"app_name":"HARTEK CMD","login_heading":"Sign In"}' > "$OUT_FILE"
+          if [[ "$REQ_URL" =~ /api/version ]]; then
+            if [ -n "\${MOCK_STALE_COMMIT:-}" ] || [ "\${SIMULATE_STALE_WORKER:-0}" = "1" ]; then
+              echo "{\\"status\\":\\"ok\\",\\"commit\\":\\"\${MOCK_STALE_COMMIT:-stale_worker_mismatch_commit}\\",\\"version\\":\\"0.0.1\\"}" > "$OUT_FILE"
+            elif [ -f "backend/dist/version.json" ]; then
+              cat "backend/dist/version.json" > "$OUT_FILE"
+            elif [ -f "dist/version.json" ]; then
+              cat "dist/version.json" > "$OUT_FILE"
+            elif [ -f ".prev-deployed-commit" ]; then
+              PREV_C=$(cat .prev-deployed-commit | tr -d '\\r\\n')
+              echo "{\\"status\\":\\"ok\\",\\"commit\\":\\"$PREV_C\\",\\"version\\":\\"0.0.1\\"}" > "$OUT_FILE"
+            elif [ -f ".releases/previous-release.json" ]; then
+              PREV_C=$(grep '"commit"' .releases/previous-release.json | cut -d '"' -f4 || echo "")
+              echo "{\\"status\\":\\"ok\\",\\"commit\\":\\"$PREV_C\\",\\"version\\":\\"0.0.1\\"}" > "$OUT_FILE"
+            else
+              ACT_C=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+              echo "{\\"status\\":\\"ok\\",\\"commit\\":\\"$ACT_C\\",\\"version\\":\\"0.0.1\\"}" > "$OUT_FILE"
+            fi
+          else
+            echo '{"app_name":"HARTEK CMD","login_heading":"Sign In"}' > "$OUT_FILE"
+          fi
         fi
         echo -n "200"
         exit 0

@@ -138,11 +138,14 @@ tmux new -s deploy || tmux attach -t deploy
 10. **Process Reload & Sequential Reload Risk:**
     - Reloads PM2 cluster via `pm2 reload ecosystem.config.js`.
     - *Sequential Activation Risk:* PM2 reloads `cmd-backend` and `cmd-frontend` sequentially. During the brief reload window (typically 2-4 seconds), the updated backend may receive requests from the previous frontend, or vice versa. Because database migrations, schema alterations, and dependency updates are blocked in routine deployments, all API changes between adjacent releases must maintain backward compatibility.
-11. **Automated Multi-Point Health Probes:**
+11. **Automated Multi-Point Health Probes & Release Identity Verification:**
     - Enforces bounded connection and request timeouts (`--connect-timeout 5 --max-time 10`, 5000ms node fallback).
-    - **Backend Response Content Validation:** Probes `/api/settings/public` (port 4000) and strictly verifies that the response returns HTTP 200 OK and valid JSON containing `app_name` or `login_heading`. HTTP 401 Unauthorized, HTTP 403 Forbidden, HTTP 500 Internal Server Error, or HTML error pages are rejected as failures.
-    - **Frontend Release Identity Verification:** Probes `http://127.0.0.1:3000/` and validates that the candidate's specific `BUILD_ID` manifest (`/_next/static/${CANDIDATE_BUILD_ID}/_buildManifest.js`) is served, ensuring stale PM2 workers cannot cause false-positive health verification.
-    - If health checks fail across 5 attempts (15 seconds), **automatically invokes `scripts/rollback-production.sh`** and preserves all recovery artifacts and metadata.
+    - **Backend Response Content & Release Identity Verification:**
+      - Probes `/api/settings/public` (port 4000) and strictly verifies that the response returns HTTP 200 OK and valid JSON containing `app_name` or `login_heading`. HTTP 401 Unauthorized, HTTP 403 Forbidden, HTTP 500 Internal Server Error, or HTML error pages are rejected as failures.
+      - Probes `/api/version` (port 4000) and strictly asserts that the response returns HTTP 200 OK and an exact commit SHA match with `$TARGET_COMMIT`. Any response returning `unknown`, empty, or a mismatched commit fails closed.
+    - **Frontend Release Identity Verification:** Probes `http://127.0.0.1:3000/` and validates that the candidate's specific `BUILD_ID` manifest (`/_next/static/${CANDIDATE_BUILD_ID}/_buildManifest.js`) is served, ensuring stale Next.js workers cannot cause false-positive health verification.
+    - **Consecutive Verification Guarantee:** Requires **2 consecutive successful probe cycles** across both services. Any flapping, transient failure, or stale worker response immediately resets the consecutive pass counter to 0.
+    - If health verification does not achieve 2 consecutive passes within 6 attempts (18 seconds), **automatically invokes `scripts/rollback-production.sh`** and preserves all recovery artifacts and metadata.
 
 #### Host Interruption / Uncatchable Signal Recovery (SIGKILL / OOM):
 If the deployment process is terminated by an uncatchable signal (`SIGKILL`, host kernel OOM killer, or host power interruption) where exit traps cannot run:
@@ -278,14 +281,61 @@ graph TD
 
 ---
 
-### Procedure A: Isolated Verification & Disposable Scratch Database Restoration Drill (Default)
+### Procedure A: Isolated Staging Verification & Disposable Scratch Database Restoration Drill (Canonical)
 
-Use this non-destructive procedure to verify backup data completeness, test new schema migrations, or conduct operator disaster-recovery drills without touching production or staging databases.
+Use this non-destructive procedure to verify backup data completeness, test new schema migrations, or conduct operator disaster-recovery drills exclusively against a verified, dedicated staging PostgreSQL instance (`STAGING_PG_HOST:STAGING_PG_PORT`).
+
+> [!IMPORTANT]
+> **Production Safety Guarantees:**
+> - Runs ONLY against a dedicated, positively verified staging PostgreSQL instance (default port `5433`).
+> - Positively asserts that production database `cmd_office` does NOT exist on the target instance.
+> - Operates strictly inside an ephemeral, collision-resistant scratch database (`cmd_restore_drill_*`).
+> - The production database (`cmd_office`) and baseline staging database (`cmd_office_staging`) are never modified, written to, or dropped.
+> - Implemented in the canonical executable script: [`scripts/isolated-staging-restore-drill.sh`](file:///d:/CMDDashboard-main/scripts/isolated-staging-restore-drill.sh).
+
+#### Dedicated Staging Instance Provisioning (Isolated Docker Container):
+If a dedicated staging PostgreSQL daemon is not already running on port 5433, operators can start an isolated container on the staging host.
+
+> [!IMPORTANT]
+> **Loopback-Only Interface Binding (`127.0.0.1`):**
+> PostgreSQL must bind strictly to the loopback interface (`-p 127.0.0.1:5433:5432`). Never use an unrestricted port mapping (such as `-p 5433:5432`), as Docker modifies `iptables` and bypasses local host firewall rules, which would expose the database publicly.
 
 > [!NOTE]
-> **Operational Note:** This procedure is a documented operational protocol. No live database restoration drill has been executed during this pre-deployment review.
+> **Administrative Account vs Dedicated Non-Superuser Drill Role:**
+> The official PostgreSQL container image automatically grants `SUPERUSER` privileges to its bootstrap `POSTGRES_USER`. Because the restoration drill enforces principle-of-least-privilege and rejects superuser connections by default, the container must be initialized with a separate administrative account (`drill_admin`), after which the dedicated non-superuser role (`cmd_staging`) is created with only `LOGIN` and `CREATEDB` permissions.
 
-#### Step 1: Locate and Validate Backup Archive Integrity
+```bash
+# Step 1: Start isolated container with separate administrative account
+docker run -d \
+  --name cmd-staging-db-drill \
+  -p 127.0.0.1:5433:5432 \
+  -e POSTGRES_DB=postgres \
+  -e POSTGRES_USER=drill_admin \
+  -e POSTGRES_PASSWORD="<admin_password>" \
+  postgres:15-alpine
+
+# Step 2: Wait for PostgreSQL daemon to accept connections
+docker exec -i cmd-staging-db-drill sh -c 'until pg_isready -U drill_admin -d postgres; do sleep 1; done'
+
+# Step 3: Create dedicated non-superuser drill role with CREATEDB privilege
+docker exec -i cmd-staging-db-drill psql -U drill_admin -d postgres -c \
+  "CREATE ROLE cmd_staging WITH LOGIN NOSUPERUSER NOCREATEROLE CREATEDB PASSWORD '<staging_password>';"
+```
+
+#### Canonical Execution Command:
+```bash
+# 1. Provide explicit affirmative authorization (fails closed without this flag)
+export CONFIRM_ISOLATED_STAGING_ENVIRONMENT=true
+
+# 2. Configure dedicated staging target parameters (connects as non-superuser cmd_staging)
+export STAGING_PG_HOST="127.0.0.1"
+export STAGING_PG_PORT="5433"          # Dedicated staging port (never 5432)
+export STAGING_PG_USER="cmd_staging"    # Dedicated non-superuser role (created above)
+export STAGING_PG_PASSWORD="<staging_password>"
+
+# 3. Execute drill with target backup archive (PostgreSQL custom format .dump or .sql.gz)
+./scripts/isolated-staging-restore-drill.sh /var/backups/cmd-dashboard/cmd_office_predeploy_20261030_110915.dump
+```
 ```bash
 set -euo pipefail
 
@@ -1229,3 +1279,84 @@ The table below documents the exact HTTP response codes produced across controll
 | **Malformed / Missing Assignee UUID** | **`400 Bad Request`** | `RecipientValidator.validateInternalUserIds()` | `assigneeIds` is empty, contains non-UUID strings, or contains a UUID not present in the database. |
 | **DTO Schema Validation Failure** | **`400 Bad Request`** | NestJS `ValidationPipe` | Missing mandatory fields (`title`, `pri`, `st`, `assigneeIds`) or invalid types. |
 | **Valid Subordinate Task Assignment** | **`201 Created`** | `TaskController.create()` | Ordinary user with `Create:Tasks` successfully creates tasks for a direct subordinate (or CMD for any user). Returns array of created `Task` objects with batch ID. |
+
+---
+
+## 9. Native Linux Staging Deployment & Rollback Validation Plan
+
+> [!IMPORTANT]
+> **Boundary Notice:** While simulated subshell unit tests verify script syntax, branching logic, and error traps on development workstations, **native Linux execution** on the staging VPS is mandatory to validate POSIX file-locking, PM2 socket handover, filesystem atomic directory swaps, and signal handling under real Linux kernels.
+
+This plan details 10 reproducible verification scenarios to execute on the dedicated staging host (`/var/www/cmd-dashboard-staging`):
+
+### 9.1. Test Scenarios
+
+#### Scenario 1: Non-Blocking Deployment Concurrency Lock
+- **Objective:** Verify that multiple deployment instances cannot execute concurrently against the same working tree and build cache.
+- **Action:** Open two SSH terminal sessions. In Terminal 1, run `flock -x .releases/deploy.lock sleep 30`. In Terminal 2, immediately execute `./scripts/deploy-staging.sh`.
+- **Expected Outcome:** Terminal 2 aborts immediately with `[CRITICAL ERROR] Another deployment instance is currently active!` and exit code 1. Active runtime artifacts and Git state are completely untouched.
+
+#### Scenario 2: Isolated Worktree Candidate Build Failure
+- **Objective:** Verify that a compilation failure inside `.releases/candidate-worktree` leaves the active checkout and running services 100% untouched.
+- **Action:** Inject a syntax error into a temporary candidate branch and attempt deployment.
+- **Expected Outcome:** Step 5 (`nest build`) fails; deployment traps catch the error, remove the temporary candidate worktree, and exit with code 1. `git status` on `main` remains clean, and active PM2 processes continue serving requests without interruption.
+
+#### Scenario 3: Signal Interruption Handling (`SIGHUP`, `SIGINT`, `SIGTERM`)
+- **Objective:** Verify that terminating a deployment script prior to activation cleanly cleans temporary candidate directories.
+- **Action:** Start `./scripts/deploy-staging.sh` and send `kill -INT <pid>` (Ctrl+C) during Step 5.
+- **Expected Outcome:** The script traps `SIGINT`, outputs `[INTERRUPT] Received SIGINT signal`, removes `.releases/candidate-worktree` and `*.candidate` directories, and exits with code 130. No partial artifacts remain.
+
+#### Scenario 4: Partial Activation Interruption & Auto-Recovery
+- **Objective:** Verify that an interruption or crash occurring between backend and frontend directory activation triggers automated rollback.
+- **Action:** Execute `SIMULATE_FAILURE_BETWEEN_ACTIVATIONS=1 ./scripts/deploy-staging.sh`.
+- **Expected Outcome:** The backend directory is swapped, the simulation hook aborts with exit 1 before frontend swap; exit trap catches the state (`ACTIVATION_STARTED=1`) and automatically executes recovery, restoring both services to previous matching `.prev` releases.
+
+#### Scenario 5: Backend Release Identity Mismatch Detection
+- **Objective:** Verify that deployment fails closed if PM2 fails to restart and a stale worker continues serving the previous commit.
+- **Action:** Temporarily point PM2 reload to a no-op or stub `/api/version` to return the previous commit hash.
+- **Expected Outcome:** Step 8 health check detects that `/api/version` does not match `$TARGET_COMMIT`. The consecutive pass counter does not increment. After attempts expire, the script logs `[CRITICAL ERROR] Health check failed: Candidate release did not pass verification!` and triggers automated rollback.
+
+#### Scenario 6: Health-Check Bounded Timeouts
+- **Objective:** Verify that hung HTTP connections fail closed within bounded timeouts without hanging deployment scripts.
+- **Action:** Configure firewall (`iptables` / `ufw`) to drop traffic on port 4001 during health verification.
+- **Expected Outcome:** Probes enforce `--connect-timeout 5 --max-time 10` (or Node fallback 5000ms), fail cleanly, retry across 6 attempts (18s total), and trigger rollback without indefinite hangs.
+
+#### Scenario 7: Automated Rollback on Verification Failure
+- **Objective:** Verify that a release failing health verification triggers `scripts/rollback-staging.sh` and restores working services.
+- **Action:** Deploy a release configured to return HTTP 500 on `/api/settings/public`.
+- **Expected Outcome:** Step 8 fails; rollback script executes automatically, restores `backend/dist.prev` and `frontend/.next.prev`, reloads PM2, verifies health, and restores service availability.
+
+#### Scenario 8: Failed Rollback Diagnostic Preservation
+- **Objective:** Verify that if rollback itself encounters a failure, diagnostic artifacts are not deleted.
+- **Action:** Simulate corrupted `.prev` artifact during rollback.
+- **Expected Outcome:** Rollback aborts with code 1, preserves `.old`, `.prev`, and release metadata, and outputs explicit instructions for manual operator inspection via `pm2 logs`.
+
+#### Scenario 9: PM2 Process Behavior & Multi-Worker Handover
+- **Objective:** Verify that PM2 zero-downtime reload preserves uptime and that consecutive health checks prevent false-positive acceptance during rolling reloads.
+- **Action:** Run continuous HTTP requests (`while true; do curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:4001/api/version; sleep 0.2; done`) during `pm2 reload`.
+- **Expected Outcome:** Zero dropped requests (`200 OK` throughout); `deploy-staging.sh` requires 2 consecutive successful checks, ensuring all workers have converged on the new release.
+
+#### Scenario 10: Preservation of Production Data & Previous Releases
+- **Objective:** Verify that repeated deployment and rollback cycles never delete backups, never touch `cmd_office`, and preserve recovery metadata.
+- **Action:** Execute full deploy &rarr; rollback &rarr; deploy cycle.
+- **Expected Outcome:** Database row counts in `cmd_office_staging` remain identical; production database `cmd_office` is untouched; `.releases/previous-release.json` accurately reflects release history.
+
+---
+
+### 9.2. Residual Risk Analysis: Symlinked Production `node_modules`
+
+In both staging and production deployment scripts, candidate builds in isolated worktrees (`.releases/candidate-worktree`) link the active dependency directories:
+```bash
+ln -s "$PROJECT_DIR/backend/node_modules" "$CANDIDATE_WORKTREE/backend/node_modules"
+ln -s "$PROJECT_DIR/frontend/node_modules" "$CANDIDATE_WORKTREE/frontend/node_modules"
+```
+
+**Identified Residual Risk:**
+- **Standard Symlinks Do Not Enforce OS-Level Write Protection:**
+  While Step 3 blocks deployment if `package.json` or `package-lock.json` changes, and blocks schema alterations to avoid running `prisma generate`, standard Linux symlinks provide **no write protection** at the filesystem level.
+- **Write-Through Threat:** If a build tool (Nest CLI, Webpack, Babel, Next.js telemetry, or post-install scripts) attempts to write cache files, modify packages, or patch dependencies inside `node_modules/`, it writes directly through the symlink into the active runtime's `node_modules`.
+- **Future Mitigation Roadmap:**
+  1. *Linux Read-Only Bind Mounts:* In containerized or root-accessible environments, mount dependencies as read-only:
+     `mount --bind -o ro "$PROJECT_DIR/backend/node_modules" "$CANDIDATE_WORKTREE/backend/node_modules"`
+  2. *Hardlink Trees:* Use `cp -al` to copy directory structure and hardlink immutable files.
+  3. *Isolated Dependency Caching:* Maintain a separate build-cache directory on the host filesystem that is decoupled from active runtime paths.

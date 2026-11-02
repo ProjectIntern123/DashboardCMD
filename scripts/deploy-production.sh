@@ -438,6 +438,24 @@ if [ ! -f "$CANDIDATE_WORKTREE/backend/dist/src/app.module.js" ]; then
 fi
 echo "  [SUCCESS] Backend candidate release compiled and verified in worktree dist."
 
+# Generate candidate backend version manifest inside candidate build output
+# (deleteOutDir in nest-cli.json wiped dist prior to build, so manifest is written post-build)
+BACKEND_MANIFEST_FILE="$CANDIDATE_WORKTREE/backend/dist/version.json"
+cat << EOF > "$BACKEND_MANIFEST_FILE"
+{
+  "commit": "$TARGET_COMMIT",
+  "builtAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date +"%Y-%m-%dT%H:%M:%SZ")",
+  "version": "$(grep '"version"' "$CANDIDATE_WORKTREE/backend/package.json" 2>/dev/null | head -n1 | cut -d '"' -f 4 || echo "0.0.1")"
+}
+EOF
+
+if [ ! -s "$BACKEND_MANIFEST_FILE" ]; then
+    echo "  [CRITICAL ERROR] Failed to generate backend candidate release manifest ($BACKEND_MANIFEST_FILE)!"
+    git worktree remove --force "$CANDIDATE_WORKTREE" 2>/dev/null || rm -rf "$CANDIDATE_WORKTREE"
+    exit 1
+fi
+echo "  [SUCCESS] Backend candidate release manifest generated (commit: $TARGET_COMMIT)."
+
 echo "==> Step 6: Compiling Frontend Candidate Release inside Isolated Worktree..."
 (cd "$CANDIDATE_WORKTREE/frontend" && npm run build)
 
@@ -628,6 +646,72 @@ check_http_endpoint() {
     fi
 }
 
+# Release Identity Verification: ensure active NestJS process is serving the candidate commit
+check_backend_release_identity() {
+    local expected_commit="$1"
+    local url="http://127.0.0.1:4000/api/version"
+    local probe_tmp="$PROJECT_DIR/.releases/probe_version_$$.json"
+    mkdir -p "$PROJECT_DIR/.releases"
+    local match=1
+
+    if command -v curl &> /dev/null; then
+        local http_code
+        http_code=$(curl -s -o "$probe_tmp" -w "%{http_code}" --connect-timeout 5 --max-time 10 "$url" 2>/dev/null || echo "000")
+        if [ "$http_code" = "200" ]; then
+            if command -v node &> /dev/null; then
+                if EXPECTED="$expected_commit" node -e '
+                    try {
+                        const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+                        const exp = (process.env.EXPECTED || "").trim();
+                        if (d && typeof d === "object" && typeof d.commit === "string") {
+                            const act = d.commit.trim();
+                            if (act && act !== "unknown" && (!exp || act === exp)) {
+                                process.exit(0);
+                            }
+                        }
+                    } catch(e) {}
+                    process.exit(1);
+                ' "$probe_tmp" >/dev/null 2>&1; then
+                    match=0
+                fi
+            else
+                if grep -q "\"commit\":[[:space:]]*\"$expected_commit\"" "$probe_tmp" 2>/dev/null; then
+                    match=0
+                fi
+            fi
+        fi
+        rm -f "$probe_tmp"
+    elif command -v node &> /dev/null; then
+        if EXPECTED="$expected_commit" node -e '
+            const http = require("http");
+            const exp = (process.env.EXPECTED || "").trim();
+            const req = http.get("http://127.0.0.1:4000/api/version", { timeout: 5000 }, (res) => {
+                if (res.statusCode !== 200) process.exit(1);
+                let body = "";
+                res.on("data", c => body += c);
+                res.on("end", () => {
+                    try {
+                        const d = JSON.parse(body);
+                        if (d && typeof d === "object" && typeof d.commit === "string") {
+                            const act = d.commit.trim();
+                            if (act && act !== "unknown" && (!exp || act === exp)) {
+                                process.exit(0);
+                            }
+                        }
+                    } catch(e) {}
+                    process.exit(1);
+                });
+            });
+            req.on("error", () => process.exit(1));
+            req.on("timeout", () => { req.destroy(); process.exit(1); });
+        ' >/dev/null 2>&1; then
+            match=0
+        fi
+    fi
+
+    return "$match"
+}
+
 PROBE_TOOL=""
 if command -v curl &> /dev/null; then
     PROBE_TOOL="curl"
@@ -642,15 +726,29 @@ fi
 echo "  Health probe tool: $PROBE_TOOL"
 
 HEALTHY=false
-for i in {1..5}; do
-    echo "  Health check attempt $i of 5 (waiting 3s)..."
+CONSECUTIVE_SUCCESSES=0
+REQUIRED_CONSECUTIVE=2
+
+for i in {1..6}; do
+    echo "  Health check attempt $i of 6 (waiting 3s)..."
     sleep 3
     BACKEND_OK=false
     FRONTEND_OK=false
 
+    # 1. Backend settings validation & release identity verification
     if check_http_endpoint "http://127.0.0.1:4000/api/settings/public"; then
-        BACKEND_OK=true
+        if [ -n "${TARGET_COMMIT:-}" ]; then
+            if check_backend_release_identity "$TARGET_COMMIT"; then
+                BACKEND_OK=true
+            else
+                BACKEND_OK=false
+            fi
+        else
+            BACKEND_OK=true
+        fi
     fi
+
+    # 2. Frontend response validation & release identity verification
     if check_http_endpoint "http://127.0.0.1:3000/"; then
         # Release Identity Verification: ensure active Next.js process is serving the candidate build manifest
         if [ -n "${CANDIDATE_BUILD_ID:-}" ]; then
@@ -665,13 +763,22 @@ for i in {1..5}; do
     fi
 
     if [ "$BACKEND_OK" = true ] && [ "$FRONTEND_OK" = true ]; then
-        HEALTHY=true
-        break
+        CONSECUTIVE_SUCCESSES=$((CONSECUTIVE_SUCCESSES + 1))
+        echo "  [HEALTH PASS] Attempt $i passed verification (Consecutive: $CONSECUTIVE_SUCCESSES/$REQUIRED_CONSECUTIVE)."
+        if [ "$CONSECUTIVE_SUCCESSES" -ge "$REQUIRED_CONSECUTIVE" ]; then
+            HEALTHY=true
+            break
+        fi
+    else
+        if [ "$CONSECUTIVE_SUCCESSES" -gt 0 ]; then
+            echo "  [HEALTH FLAP] Attempt $i failed after prior pass. Resetting consecutive counter to 0."
+        fi
+        CONSECUTIVE_SUCCESSES=0
     fi
 done
 
 if [ "$HEALTHY" = true ]; then
-    echo "  [SUCCESS] All application services are online and healthy!"
+    echo "  [SUCCESS] All application services are online and verified on release commit $TARGET_COMMIT!"
 
     # 1. Clean up temporary .old, .old.bak, and .prev.old recovery directories safely now that health is confirmed
     rm -rf backend/dist.old backend/dist.old.bak frontend/.next.old frontend/.next.old.bak backend/dist.prev.old frontend/.next.prev.old

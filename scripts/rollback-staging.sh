@@ -251,7 +251,49 @@ check_http_endpoint() {
     fi
 }
 
+# Release Identity Verification: ensure active NestJS process is serving the restored rollback commit
+check_backend_release_identity() {
+    local expected_commit="$1"
+    local url="http://127.0.0.1:4001/api/version"
+    local probe_tmp="/tmp/probe_staging_version_rollback_$$.json"
+    local match=1
+
+    if command -v curl &> /dev/null; then
+        local http_code
+        http_code=$(curl -s -o "$probe_tmp" -w "%{http_code}" --connect-timeout 5 --max-time 10 "$url" 2>/dev/null || echo "000")
+        if [ "$http_code" = "200" ]; then
+            if command -v node &> /dev/null; then
+                if EXPECTED="$expected_commit" node -e '
+                    try {
+                        const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+                        const exp = (process.env.EXPECTED || "").trim();
+                        if (d && typeof d === "object" && typeof d.commit === "string") {
+                            const act = d.commit.trim();
+                            if (act && act !== "unknown" && (!exp || act === exp)) {
+                                process.exit(0);
+                            }
+                        }
+                    } catch(e) {}
+                    process.exit(1);
+                ' "$probe_tmp" >/dev/null 2>&1; then
+                    match=0
+                fi
+            else
+                if grep -q "\"commit\":[[:space:]]*\"$expected_commit\"" "$probe_tmp" 2>/dev/null; then
+                    match=0
+                fi
+            fi
+        fi
+        rm -f "$probe_tmp"
+    fi
+
+    return "$match"
+}
+
 HEALTHY=false
+CONSECUTIVE_SUCCESSES=0
+REQUIRED_CONSECUTIVE=2
+
 for i in {1..5}; do
     echo "  Staging health check attempt $i of 5 (waiting 3s)..."
     sleep 3
@@ -259,7 +301,15 @@ for i in {1..5}; do
     FRONTEND_OK=false
 
     if check_http_endpoint "http://127.0.0.1:4001/api/settings/public"; then
-        BACKEND_OK=true
+        if [ -n "${ROLLBACK_COMMIT:-}" ]; then
+            if check_backend_release_identity "$ROLLBACK_COMMIT"; then
+                BACKEND_OK=true
+            else
+                BACKEND_OK=false
+            fi
+        else
+            BACKEND_OK=true
+        fi
     fi
     if check_http_endpoint "http://127.0.0.1:3001/"; then
         if [ -n "${PREV_BUILD_ID:-}" ]; then
@@ -274,8 +324,17 @@ for i in {1..5}; do
     fi
 
     if [ "$BACKEND_OK" = true ] && [ "$FRONTEND_OK" = true ]; then
-        HEALTHY=true
-        break
+        CONSECUTIVE_SUCCESSES=$((CONSECUTIVE_SUCCESSES + 1))
+        echo "  [HEALTH PASS] Attempt $i passed verification (Consecutive: $CONSECUTIVE_SUCCESSES/$REQUIRED_CONSECUTIVE)."
+        if [ "$CONSECUTIVE_SUCCESSES" -ge "$REQUIRED_CONSECUTIVE" ]; then
+            HEALTHY=true
+            break
+        fi
+    else
+        if [ "$CONSECUTIVE_SUCCESSES" -gt 0 ]; then
+            echo "  [HEALTH FLAP] Attempt $i failed after prior pass. Resetting consecutive counter to 0."
+        fi
+        CONSECUTIVE_SUCCESSES=0
     fi
 done
 

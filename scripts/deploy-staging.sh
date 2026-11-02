@@ -9,6 +9,76 @@ set -euo pipefail
 TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
 PROJECT_DIR="$(pwd)"
 
+if [ ! -d ".git" ]; then
+    echo "  [CRITICAL ERROR] Not a git repository. Cannot safely verify release state."
+    exit 1
+fi
+
+CURRENT_COMMIT=$(git rev-parse --verify HEAD 2>/dev/null || echo "")
+if [ -z "$CURRENT_COMMIT" ]; then
+    echo "  [CRITICAL ERROR] Failed to determine current Git HEAD commit SHA!"
+    exit 1
+fi
+
+TARGET_REF="${1:-HEAD}"
+# Resolve target reference strictly without silent fallback
+if ! TARGET_COMMIT=$(git rev-parse --verify "${TARGET_REF}^{commit}" 2>/dev/null); then
+    echo "  [CRITICAL ERROR] Invalid or unresolvable target reference: '$TARGET_REF'!"
+    echo "  Refusing deployment: Target revision must resolve to a valid commit."
+    exit 1
+fi
+
+# Ensure compiled source matches recorded release identity exactly
+if [ "$TARGET_COMMIT" != "$CURRENT_COMMIT" ]; then
+    echo "  [CRITICAL ERROR] Target commit ($TARGET_COMMIT from '$TARGET_REF') does not match checked-out HEAD ($CURRENT_COMMIT)!"
+    echo "  Staging builds from the active directory. Please checkout the target commit first: git checkout $TARGET_COMMIT"
+    exit 1
+fi
+
+# Guard against uncommitted tracked changes in application source
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+    echo "  [CRITICAL ERROR] Dirty working tree detected! Uncommitted tracked changes exist in staging repository:" >&2
+    git status --short --untracked-files=no >&2
+    echo "  Refusing staging deployment to guarantee compiled code matches commit $TARGET_COMMIT exactly." >&2
+    exit 1
+fi
+
+# Guard against unexpected untracked source and configuration files in build paths
+# Prevents uncommitted code or configuration from altering candidate compilation
+UNTRACKED_BUILD_FILES=""
+while IFS= read -r status_line; do
+    [ -z "$status_line" ] && continue
+    if [[ "$status_line" =~ ^\?\?[[:space:]]+(.*)$ ]]; then
+        file_path="${BASH_REMATCH[1]}"
+        file_path="${file_path%\"}"
+        file_path="${file_path#\"}"
+
+        case "$file_path" in
+            backend/src/*|backend/prisma/*|backend/package.json|backend/tsconfig*.json|backend/nest-cli.json)
+                if [[ ! "$file_path" =~ \.(spec|test)\.ts$ ]]; then
+                    UNTRACKED_BUILD_FILES+="$file_path"$'\n'
+                fi
+                ;;
+            frontend/src/*|frontend/pages/*|frontend/components/*|frontend/app/*|frontend/public/*|frontend/styles/*|frontend/lib/*|frontend/utils/*|frontend/hooks/*|frontend/types/*|frontend/package.json|frontend/tsconfig*.json|frontend/next.config.*|frontend/postcss.config.*|frontend/tailwind.config.*)
+                if [[ ! "$file_path" =~ \.(spec|test)\.(ts|tsx|js|jsx)$ ]]; then
+                    UNTRACKED_BUILD_FILES+="$file_path"$'\n'
+                fi
+                ;;
+        esac
+    fi
+done < <(git status --porcelain 2>/dev/null || true)
+
+if [ -n "$UNTRACKED_BUILD_FILES" ]; then
+    echo "  [CRITICAL ERROR] Untracked source or configuration files detected in build paths!" >&2
+    echo "  These files could affect compiled build output and cause release identity mismatch:" >&2
+    while IFS= read -r f; do
+        [ -n "$f" ] && echo "    - $f" >&2
+    done <<< "$UNTRACKED_BUILD_FILES"
+    echo "  Refusing staging deployment to guarantee compiled code matches commit $TARGET_COMMIT exactly." >&2
+    echo "  Either commit, stash, or remove these untracked files before deploying." >&2
+    exit 1
+fi
+
 echo "======================================================================"
 echo "[HARTEK CMD] Staging Application Deployment"
 echo "Timestamp: $TIMESTAMP"
@@ -232,6 +302,23 @@ if [ ! -f "backend/dist.candidate/src/app.module.js" ]; then
 fi
 echo "  [SUCCESS] Backend candidate release compiled into dist.candidate."
 
+# Generate candidate backend version manifest inside candidate build output
+BACKEND_MANIFEST_FILE="backend/dist.candidate/version.json"
+cat << EOF > "$BACKEND_MANIFEST_FILE"
+{
+  "commit": "$TARGET_COMMIT",
+  "builtAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date +"%Y-%m-%dT%H:%M:%SZ")",
+  "version": "$(grep '"version"' backend/package.json 2>/dev/null | head -n1 | cut -d '"' -f 4 || echo "0.0.1")"
+}
+EOF
+
+if [ ! -s "$BACKEND_MANIFEST_FILE" ]; then
+    echo "  [CRITICAL ERROR] Failed to generate backend candidate release manifest ($BACKEND_MANIFEST_FILE)!"
+    rm -rf backend/dist.candidate
+    exit 1
+fi
+echo "  [SUCCESS] Backend candidate release manifest generated (commit: $TARGET_COMMIT)."
+
 echo "==> Step 6: Compiling Frontend Candidate Release (Isolated Build)..."
 rm -rf frontend/.next.candidate
 
@@ -367,7 +454,7 @@ fi
 echo "==> Step 9: Performing Staging Health Verification..."
 
 if [ -f "./scripts/verify-staging-health.sh" ]; then
-    bash ./scripts/verify-staging-health.sh
+    bash ./scripts/verify-staging-health.sh "$TARGET_COMMIT"
 else
     echo "  [CRITICAL ERROR] scripts/verify-staging-health.sh not found!"
     exit 1
